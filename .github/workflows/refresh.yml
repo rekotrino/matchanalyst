@@ -9,6 +9,10 @@ concurrency:
   group: refresh-board
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: nba-analyst-upload
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -27,8 +31,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            data/nba_analyst.sqlite
-            data/nhl_analyst.sqlite
+            nba-analyst-upload/data/nba_analyst.sqlite
+            nba-analyst-upload/data/nhl_analyst.sqlite
           key: dbs-${{ github.run_id }}
           restore-keys: dbs-
 
@@ -59,8 +63,8 @@ jobs:
         if: always()
         with:
           path: |
-            data/nba_analyst.sqlite
-            data/nhl_analyst.sqlite
+            nba-analyst-upload/data/nba_analyst.sqlite
+            nba-analyst-upload/data/nhl_analyst.sqlite
           key: dbs-${{ github.run_id }}
 
       - name: Deploy to Netlify
