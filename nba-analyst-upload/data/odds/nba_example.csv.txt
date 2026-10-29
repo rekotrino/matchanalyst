@@ -1,0 +1,4 @@
+game,book,market,side,line,player,price
+CLE@ATL,stake,moneyline,CLE,,,2.10
+CLE@ATL,stake,pts,over,24.5,Donovan Mitchell,1.87
+CLE@ATL,rollbit,ast,over,5.5,Donovan Mitchell,-115
