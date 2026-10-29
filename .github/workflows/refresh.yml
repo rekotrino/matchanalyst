@@ -1,0 +1,70 @@
+name: refresh-board
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-board
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Restore databases
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/nba_analyst.sqlite
+            data/nhl_analyst.sqlite
+          key: dbs-${{ github.run_id }}
+          restore-keys: dbs-
+
+      - name: Bootstrap from snapshots (first run only)
+        run: |
+          if [ ! -f data/nba_analyst.sqlite ]; then
+            python -m nba_analyst.load_snapshot data/nba_analyst.sqlite data/snapshot_2026-10-18
+            python -m nba_analyst.load_snapshot data/nba_analyst.sqlite data/snapshot_2026-10-29
+            python -m nba_analyst.load_snapshot data/nba_analyst.sqlite data/snapshot_2026-10-30
+          fi
+          if [ ! -f data/nhl_analyst.sqlite ]; then
+            python -m nhl_analyst.load_snapshot data/nhl_analyst.sqlite data/nhl_snapshot_2026-10-29
+            python -m nhl_analyst.load_snapshot data/nhl_analyst.sqlite data/nhl_snapshot_2026-10-30
+          fi
+
+      - name: Run pipelines
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: |
+          python -m nba_analyst run --max-summaries 150
+          python -m nhl_analyst run --max-summaries 150
+
+      - name: Build site
+        run: python -m nba_analyst export-site site
+
+      - name: Save databases
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            data/nba_analyst.sqlite
+            data/nhl_analyst.sqlite
+          key: dbs-${{ github.run_id }}
+
+      - name: Deploy to Netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: npx --yes netlify-cli@17 deploy --prod --dir=site --message "board refresh $(date -u +%Y-%m-%dT%H:%MZ)"
