@@ -812,12 +812,13 @@ tr.dim td { color: var(--muted); }
     ensureDay();
     const inDay = x => !state.day || (D.games.find(g => g.game.game_id === x.game_id) || {}).game?.date_et === state.day;
     const opps = (M.opportunities || []).filter(inDay), recs = opps.filter(o => o.recommended);
-    const sec = state.msec;
+    const sec = state.msec || 'opps';
     const tabs = [['opps', 'Ranked opportunities'], ['books', 'Sportsbook comparison'], ['moves', 'Line movement'], ['alts', 'Alternative lines'], ['disagree', 'Market disagreement'], ['reliability', 'Consistency & uncertainty'], ['portfolio', 'Portfolio risk'], ['track', 'Independent tracking']];
     const alerts = (M.alerts || []).filter(a => inDay(a.opp || {}));
     const S = D.systems && D.systems.market || {};
     let body = '';
-    if (sec === 'opps') body = `<p class="note">Score = 35 × discrepancy (model vs consensus line, in sd) + 25 × odds advantage (best book vs the others) + 20 × reliability + 10 × statistical evidence (L10 hit rate) + 10 × favourable line movement. Entry requires a discrepancy or an odds advantage; movement alone never qualifies. <strong>rec</strong> = score ≥ ${M.rules.recommend_score}, EV ≥ ${sg(100 * M.rules.min_ev)}%, confidence ≥ ${M.rules.min_confidence}, no flags; those are logged as this page's recommendations. One per player per game. Click a row for the breakdown, movement and alternative lines.</p>${marketOpps(M, opps)}`;
+    const oneBook = (M.books || []).length <= 1;
+    if (sec === 'opps') body = `${oneBook ? '<p class="warn">Only one book is quoting player props right now (the sportsbook feed is out of quota), so the odds-advantage component is zero for every selection and a score of 60 needs a large model–market gap on a reliable player. Recommendations will be rare until the feed returns.</p>' : ''}<p class="note">Score = 35 × discrepancy (model vs consensus line, in sd) + 25 × odds advantage (best book vs the others) + 20 × reliability + 10 × statistical evidence (L10 hit rate) + 10 × favourable line movement. Entry requires a discrepancy or an odds advantage; movement alone never qualifies. <strong>rec</strong> = score ≥ ${M.rules.recommend_score}, EV ≥ ${sg(100 * M.rules.min_ev)}%, confidence ≥ ${M.rules.min_confidence}, no flags; those are logged as this page's recommendations. One per player per game. Click a row for the breakdown, movement and alternative lines.</p>${marketOpps(M, opps)}`;
     else if (sec === 'books') { const comps = (M.comparisons || []).filter(inDay);
       body = `<div class="row two"><div><h3>Who offers the best price</h3><div class="table-wrap"><table><thead><tr><th>Book</th><th class="num">Quotes</th><th class="num">Best price</th><th class="num">Share</th></tr></thead><tbody>${(M.books || []).map(b => `<tr><td>${esc(b.book)}</td><td class="num">${b.quotes}</td><td class="num">${b.best}</td><td class="num"><strong>${pct(b.best_share, 0)}</strong></td></tr>`).join('')}</tbody></table></div><p class="note">Share = how often the book has the best over or under price on a line it quotes. Polymarket's prop prices are thin and the ask moves with size.</p></div><div></div></div>
         <h3>Biggest price gaps between books</h3><div class="table-wrap"><table><thead><tr><th>Player</th><th>Game</th><th>Market</th><th class="num">Line</th><th class="num">Model P(over)</th><th>Best over</th><th>Best under</th><th class="num">Books</th><th class="num">Spread over / under</th><th>All prices</th></tr></thead><tbody>${comps.slice(0, 150).map(c => `<tr class="click" data-pplayer="${esc(c.player_id)}" data-pgame="${esc(c.game_id)}"><td><strong>${esc(c.player)}</strong> <span class="note">${esc(c.team)}</span></td><td>${esc(c.game)}</td><td>${esc(c.market)}</td><td class="num">${c.line}</td><td class="num">${pct(c.p_over, 0)}</td><td>${c.best_over ? `<strong>${Number(c.best_over.price).toFixed(2)}×</strong> <span class="note">${esc(c.best_over.book)}</span>` : '–'}</td><td>${c.best_under ? `<strong>${Number(c.best_under.price).toFixed(2)}×</strong> <span class="note">${esc(c.best_under.book)}</span>` : '–'}</td><td class="num">${c.n_books}</td><td class="num">${(100 * c.price_spread_over).toFixed(1)} / ${(100 * c.price_spread_under).toFixed(1)} pts</td><td class="note">${esc(Object.entries(c.books).map(([b, v]) => `${b} ${v.over ? v.over.toFixed(2) : '–'}/${v.under ? v.under.toFixed(2) : '–'}`).join(' · '))}</td></tr>`).join('')}</tbody></table></div>`; }
@@ -932,7 +933,8 @@ tr.dim td { color: var(--muted); }
   function showSport(key) {
     if (!ALL[key]) return;
     sport = key; D = ALL[key];
-    state = STATES[key] || freshState();
+    state = Object.assign(freshState(), STATES[key] || {});   // saved state from an older page version may lack new fields
+    if (!state.vfilter || typeof state.vfilter !== 'object') state.vfilter = freshState().vfilter;
     $('#season').textContent = D.season_label;
     $('#brand').textContent = Object.keys(ALL).length > 1 ? 'Sports Analyst' : (D.sport_label || 'NBA') + ' Analyst';
     $('#generated').textContent = 'updated ' + D.generated_at.replace('T', ' ');
