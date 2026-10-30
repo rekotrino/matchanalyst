@@ -97,9 +97,10 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Deploy to Netlify (optional)
-        if: ${{ secrets.NETLIFY_AUTH_TOKEN != '' && secrets.NETLIFY_SITE_ID != '' }}
         continue-on-error: true
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-        run: npx --yes netlify-cli@17 deploy --prod --dir=site --message "board refresh $(date -u +%Y-%m-%dT%H:%MZ)"
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then echo "Netlify secrets not set, skipping"; exit 0; fi
+          npx --yes netlify-cli@17 deploy --prod --dir=site --message "board refresh $(date -u +%Y-%m-%dT%H:%MZ)" || echo "Netlify deploy failed (non-fatal)"
