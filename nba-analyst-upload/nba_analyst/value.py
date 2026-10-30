@@ -54,13 +54,15 @@ def _age_hours(ts, now):
 MAX_EDGE = 0.25   # our probability minus devigged implied above this means a bad line, not a good bet
 
 
-def _risk_single(p, robust, stale, flagged, implied=None):
+def _risk_single(p, robust, stale, flagged, implied=None, small_sample=False):
     if flagged:
         return "unverified"
     if implied is not None and p - implied > MAX_EDGE:
         return "suspect"
     if stale:
         return "stale"
+    if small_sample:
+        return "medium" if p >= 0.65 else "high"
     if p >= 0.70 and (robust is None or robust >= 0.60):
         return "low"
     if p >= 0.60:
@@ -76,6 +78,13 @@ def _risk_parlay(jp, n_legs):
     return "high" if n_legs <= 4 else "very high"
 
 
+SOFT_FLAGS = {"small sample"}
+
+
+def hard_flags(flags):
+    return [f for f in (flags or []) if f not in SOFT_FLAGS]
+
+
 def build_singles(results, now, stale_hours=STALE_HOURS):
     out = []
     for r in results:
@@ -84,7 +93,7 @@ def build_singles(results, now, stale_hours=STALE_HOURS):
             continue
         label = f"{g['away']} @ {g['home']}"
         for it in r["prop_items"]:
-            flagged = bool(it.get("flags"))
+            flagged = bool(hard_flags(it.get("flags")))
             for side in ("over", "under"):
                 best = None
                 for x in it["ladder"]:
@@ -121,7 +130,7 @@ def build_singles(results, now, stale_hours=STALE_HOURS):
                     "flags": it.get("flags") or [], "qualifying": best["qualifying"], "books": best["books"],
                     "matchup": it.get("matchup"), "l10_avg": it.get("l10_avg"), "season_avg": it.get("season_avg"),
                     "proj_min": it.get("proj_min"), "n_games": it.get("n_games"),
-                    "risk": _risk_single(best["p"], best["robust"], stale, flagged, best["implied"]),
+                    "risk": _risk_single(best["p"], best["robust"], stale, flagged, best["implied"], "small sample" in (it.get("flags") or [])),
                 })
         for row in r.get("lines_table") or []:
             p, price = row["our_prob"], row["best_price"]

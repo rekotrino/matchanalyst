@@ -330,7 +330,7 @@ class Store:
             vals)
 
     def player_stats(self, team=None, since_et=None):
-        q = """SELECT p.*, g.date_et, g.home, g.away, g.season_type, g.home_score, g.away_score
+        q = """SELECT p.*, g.date_et, g.home, g.away, g.season_type, g.season_year, g.home_score, g.away_score
                FROM player_game_stats p JOIN games g ON g.game_id=p.game_id WHERE g.completed=1"""
         args = []
         if team:

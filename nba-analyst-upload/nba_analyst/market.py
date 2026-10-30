@@ -18,6 +18,8 @@ from collections import defaultdict
 from datetime import datetime
 from statistics import median
 
+from .value import hard_flags
+
 SIGNIFICANT_LINE = {"pts": 1.0, "pra": 1.5, "pr": 1.0, "pa": 1.0, "reb": 0.5, "ast": 0.5, "ra": 1.0, "tpm": 0.5, "stl": 0.5, "blk": 0.5, "tov": 0.5}
 SIGNIFICANT_PRICE = 0.04        # implied-probability points
 INJURY_WINDOW_H = 6.0
@@ -334,7 +336,7 @@ def build_market(results, store, now, generated_at, snapshot=True):
                     continue        # movement alone is never a reason
                 if z["implied"] is not None and z["p"] - z["implied"] > 0.25:
                     continue        # an edge that large is a bad line, not an opportunity
-                recommended = score >= RECOMMEND_SCORE and z["ev"] >= RECOMMEND_MIN_EV and conf >= RECOMMEND_MIN_CONF and not (it.get("flags"))
+                recommended = score >= RECOMMEND_SCORE and z["ev"] >= RECOMMEND_MIN_EV and conf >= RECOMMEND_MIN_CONF and not hard_flags(it.get("flags"))
                 skey = f"{g['game_id']}|{key[0]}|{it['stat']}|{side}"
                 opp = {
                     "key": skey, "game_id": g["game_id"], "game": label, "date_et": g["date_et"], "player": it["player"], "player_id": it["player_id"],

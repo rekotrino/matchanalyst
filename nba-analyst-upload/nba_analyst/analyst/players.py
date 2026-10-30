@@ -38,9 +38,15 @@ def _wavg(vals, weights):
     return sum(v * w for v, w in zip(vals, weights)) / s if s else None
 
 
-def player_games(rows):
+MIN_REGULAR_FOR_DROP = 5   # once a player has this many regular-season games with a team, his preseason games are dropped
+
+
+def player_games(rows, min_regular=MIN_REGULAR_FOR_DROP):
     """Group player stat rows (already chronological) by player_id, dropping DNPs
-    and zero-minute lines."""
+    and zero-minute lines. Preseason games (20-minute cameos, benches playing)
+    are kept only while a player has fewer than `min_regular` regular-season
+    games with that team; after that they would only distort his rates, hit
+    rates and rolling averages."""
     by = defaultdict(list)
     for r in rows:
         if r.get("dnp") or r.get("min") is None or r["min"] <= 0:
@@ -53,6 +59,12 @@ def player_games(rows):
         for k in ("tpm", "stl", "blk"):
             r[k] = r.get(k) or 0
         by[r["player_id"]].append(r)
+    for pid, games in by.items():
+        season = max((g.get("season_year") or 0) for g in games)
+        reg = [g for g in games if g.get("season_type") in (2, None) and g.get("season_year") == season]
+        teams = {g["team"] for g in reg}
+        if len(reg) >= min_regular:
+            by[pid] = [g for g in games if not (g.get("season_type") == 1 and g.get("season_year") == season and g["team"] in teams)]
     return by
 
 

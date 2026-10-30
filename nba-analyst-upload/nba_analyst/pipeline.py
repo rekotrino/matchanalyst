@@ -465,9 +465,10 @@ def value_legs(g, prop_items, fns):
     side at each book, with the simulated hit indicator (packed bits) so joint
     probabilities can be computed on the same simulated games."""
     legs = []
+    from .value import hard_flags
     for it in prop_items:
         e = fns.get((it["player"].lower(), it["stat"]))
-        if not e or it.get("flags"):
+        if not e or hard_flags(it.get("flags")):
             continue
         smp = e["samples"]
         for side in ("over", "under"):
