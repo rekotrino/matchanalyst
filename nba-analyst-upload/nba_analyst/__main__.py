@@ -129,7 +129,10 @@ def cmd_export_site(args):
             f.write(page_html())
         with open(os.path.join(args.out, "data.json"), "w", encoding="utf-8") as f:
             _json.dump(payload, f)
-        print(f"[site] {path} + data.json  ({', '.join(data)})  - the page reloads data.json every 3 minutes")
+        stamp = "|".join(v["generated_at"] for v in data.values())
+        with open(os.path.join(args.out, "version.json"), "w", encoding="utf-8") as f:
+            _json.dump({"stamp": stamp, "sports": list(data)}, f)
+        print(f"[site] {path} + data.json + version.json  ({', '.join(data)})  - the page checks version.json every 3 minutes")
 
 
 def cmd_backtest(args):

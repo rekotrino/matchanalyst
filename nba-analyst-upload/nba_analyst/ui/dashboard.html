@@ -848,8 +848,11 @@ tr.dim td { color: var(--muted); }
       const d = await fetchData(false); lastStamp = stampOf(d); boot(d);
       const btn = $('#refresh'); btn.hidden = false;
       btn.addEventListener('click', async () => { btn.textContent = 'Refreshing…'; try { const d2 = await fetchData(source === 'api'); lastStamp = stampOf(d2); boot(d2); } catch (e) {} btn.textContent = 'Refresh'; });
-      // poll for a newer build; re-render only when the data actually changed (keeps your place)
-      setInterval(async () => { try { const d3 = await fetchData(false); const st = stampOf(d3); if (st !== lastStamp) { lastStamp = st; save(); boot(d3); } } catch (e) {} }, 3 * 60 * 1000);
+      // poll for a newer build; on the static site read the tiny version.json first and only
+      // download data.json when the stamp changed (keeps bandwidth down and keeps your place)
+      setInterval(async () => { try {
+        if (source === 'static') { const v = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' }); if (v.ok) { const j = await v.json(); if (j.stamp === lastStamp) return; } }
+        const d3 = await fetchData(false); const st = stampOf(d3); if (st !== lastStamp) { lastStamp = st; save(); boot(d3); } } catch (e) {} }, 3 * 60 * 1000);
     } catch (err) {
       $('#app').innerHTML = `<div class="empty">Could not load data (${esc(err.message)}). Start the server with <code>python -m nba_analyst serve</code>, or publish a site folder with data.json next to this page.</div>`;
     }
