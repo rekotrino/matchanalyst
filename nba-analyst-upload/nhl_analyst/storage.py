@@ -71,6 +71,10 @@ class Store:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(picks)")}
+        if "book" not in cols:
+            self.conn.execute("ALTER TABLE picks ADD COLUMN book TEXT")
+            self.conn.commit()
 
     def _ins(self, table, row):
         cols = list(row) + ["fetched_at"]
