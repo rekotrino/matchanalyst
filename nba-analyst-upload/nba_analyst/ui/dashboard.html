@@ -527,6 +527,37 @@ tr.dim td { color: var(--muted); }
       ${body}`;
   }
 
+  // ---------- days: yesterday's results, today, and the days ahead ----------
+  const allDays = () => D.days || [...new Set(D.games.map(g => g.game.date_et))].sort();
+  function ensureDay() { const days = allDays(); if (!days.length) { state.day = null; return; }
+    if (!state.day || !days.includes(state.day)) { const t = D.today_et; state.day = days.includes(t) ? t : (days.find(d => d >= (t || '')) || days[days.length - 1]); } }
+  const dayGames = () => { ensureDay(); return D.games.filter(g => !state.day || g.game.date_et === state.day); };
+  const dayLabel = d => { const dt = new Date(d + 'T12:00:00Z'); const l = dt.toLocaleString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' }); return d === D.today_et ? l + ' · today (ET)' : d < (D.today_et || '') ? l + ' · results' : l; };
+  function dayBar() { const days = allDays(); if (days.length < 2) return ''; ensureDay(); const i = days.indexOf(state.day);
+    return `<div class="daybar"><button data-day="${days[i - 1] || ''}" ${i <= 0 ? 'disabled' : ''} aria-label="previous day">◀</button>${days.map(d => `<button data-day="${d}" aria-pressed="${d === state.day}">${esc(dayLabel(d))} <span class="note">${D.games.filter(g => g.game.date_et === d).length}</span></button>`).join('')}<button data-day="${days[i + 1] || ''}" ${i >= days.length - 1 ? 'disabled' : ''} aria-label="next day">▶</button></div>`; }
+  const score = g => g.game.completed ? `<strong>${g.game.away_score}–${g.game.home_score}</strong> final` : tip(g.game.date_utc);
+  function distStrip(sim, line, actual) {
+    if (!sim) return '';
+    const lo = Math.min(sim.p10, line != null ? line : sim.p10, actual != null ? actual : sim.p10) - 1, hi = Math.max(sim.p90, line != null ? line : sim.p90, actual != null ? actual : sim.p90) + 1;
+    const x = v => (100 * (v - lo) / (hi - lo)).toFixed(1) + '%';
+    return `<div class="dist" data-tip="10th–90th percentile of 10,000 simulated games; shaded = middle 50%; black = median${line != null ? '; red = line ' + line : ''}">
+      <div class="rail" style="left:${x(sim.p10)};right:${(100 - parseFloat(x(sim.p90))).toFixed(1)}%"></div><div class="iqr" style="left:${x(sim.p25)};width:${(parseFloat(x(sim.p75)) - parseFloat(x(sim.p25))).toFixed(1)}%"></div>
+      <div class="med" style="left:${x(sim.median)}"></div>${line != null ? `<div class="ln" style="left:${x(line)}"></div>` : ''}${actual != null ? `<div class="med" style="left:${x(actual)};background:var(--violet)"></div>` : ''}
+      <span class="lab" style="left:${x(sim.p10)}">floor ${sim.p10}</span><span class="lab" style="left:${x(sim.median)}">median ${sim.median}</span><span class="lab" style="left:${x(sim.p90)}">ceiling ${sim.p90}</span></div>`;
+  }
+  const SCEN_LABEL = { base: 'Normal game', more_minutes: 'More minutes (+12%)', fewer_minutes: 'Fewer minutes (−15%)', blowout: 'Blowout', tough_matchup: 'Tough matchup (−8%)', favorable_matchup: 'Favourable matchup (+8%)', teammate_out: 'Questionable teammate sits' };
+  function qualRow(q, withGame) {
+    const g = D.games.find(x => x.game.game_id === q.game_id);
+    const res = q.result ? `<span class="tag ${q.result}">${q.result}</span>${q.actual != null ? ` <span class="note">${q.actual}</span>` : ''}` : (q.completed ? '<span class="tag void">no box score</span>' : '<span class="pill thin">open</span>');
+    return `<tr class="click" data-pplayer="${esc(g ? g.props.find(it => it.player === q.player)?.player_id || '' : '')}" data-pgame="${esc(q.game_id)}">${withGame ? `<td>${esc(q.team + (g && g.game.home === q.team ? ' vs ' : ' @ ') + q.opp)}</td>` : ''}<td><strong>${esc(q.player)}</strong> <span class="note">${esc(q.team)}</span></td><td><strong>${q.side} ${q.line}</strong> ${statName(q.stat)}</td><td class="num"><strong>${Number(q.price).toFixed(2)}×</strong> <span class="note">${esc(q.book || '')}</span></td><td class="num">${pct(q.p, 0)}</td><td class="num">${q.implied != null ? pct(q.implied, 0) : '–'}</td><td class="num edge-pos">${sg(100 * q.ev)}%</td><td class="num">${q.robust != null ? pct(q.robust, 0) : '–'}</td><td class="num">${q.hit10 != null ? pct(q.hit10, 0) : '–'}</td><td class="num">${q.sim ? `${q.sim.median} <span class="note">(${q.sim.p25}–${q.sim.p75})</span>` : '–'}</td><td>${res}</td></tr>`;
+  }
+  const QUAL_HEAD = withGame => `<thead><tr>${withGame ? '<th>Game</th>' : ''}<th>Player</th><th>Bet</th><th class="num">Price</th><th class="num">Sim P</th><th class="num">Implied</th><th class="num">EV</th><th class="num">Worst case</th><th class="num">L10 hit</th><th class="num">Median (IQR)</th><th>Status</th></tr></thead>`;
+  function qualPanel(rows, withGame, title) {
+    const f = D.filter || {};
+    const intro = `<p class="note">Every one of these passed all six checks: simulated probability ≥ ${pct(f.prob || 0.65, 0)} over ${(f.n_sims || 10000).toLocaleString()} games · EV ≥ ${sg(100 * (f.min_ev || 0.03))}% at the best price · the player's real L10 hit rate on that exact line ≥ ${pct(f.hit_rate || 0.6, 0)} · worst-case scenario still ≥ ${pct(f.robust || 0.55, 0)} · matchup not adverse · availability verified (no injury flag, stable role, ${f.min_games || 8}+ games with the team) · edge plausible. One bet per player per game (a player's stats rise and fall together); the player page shows the rest. Ranked by probability, then EV.</p>`;
+    return `<section class="card"><h2>${esc(title)}</h2>${intro}${rows.length ? `<div class="table-wrap"><table>${QUAL_HEAD(withGame)}<tbody>${rows.map(q => qualRow(q, withGame)).join('')}</tbody></table></div>` : '<div class="nobets">NO QUALIFYING BETS</div><p class="note">Nothing on this slate passes every check. That is the filter working, not a bug: the high-probability lines are priced short, the priced-well lines are not high-probability enough, or availability is unverified.</p>'}</section>`;
+  }
+
   // ---------- props flow: matches -> match -> players -> previous numbers -> floor + odds ----------
   const odds = buy => buy ? (1 / buy).toFixed(2) + '×' : '–';
   const liquidLadder = it => it.fair_only ? it.ladder : it.ladder.filter(r => (r.liquidity || 0) >= D.config.min_liquidity);
