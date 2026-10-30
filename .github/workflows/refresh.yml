@@ -51,6 +51,7 @@ jobs:
       - name: Run pipelines
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python -m nba_analyst run --max-summaries 150
           python -m nhl_analyst run --max-summaries 150
