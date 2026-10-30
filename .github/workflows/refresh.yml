@@ -1,13 +1,29 @@
+# Live board: run both pipelines on a schedule and publish site/ to GitHub Pages.
+#
+# One-time setup: repo Settings -> Pages -> "Build and deployment" -> Source: GitHub Actions.
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   ODDS_API_KEY          optional, the-odds-api.com (Bet365 / Pinnacle / DraftKings feed)
+#   NETLIFY_AUTH_TOKEN    optional; if both Netlify secrets exist the site is also pushed to Netlify
+#   NETLIFY_SITE_ID       (non-fatal: a Netlify failure never blocks the Pages deploy)
+#
+# The SQLite databases persist between runs through the Actions cache, so each run
+# only fetches new box scores, injuries and prices (the first run builds the baseline).
+
 name: refresh-board
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
-  workflow_dispatch:
+    - cron: "*/30 * * * *"      # every 30 minutes (UTC); GitHub may delay by a few minutes
+  workflow_dispatch:            # "Run workflow" button for a manual refresh
 
 concurrency:
   group: refresh-board
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 defaults:
   run:
@@ -17,6 +33,9 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +87,18 @@ jobs:
             nba-analyst-upload/data/nhl_analyst.sqlite
           key: dbs-${{ github.run_id }}
 
-      - name: Deploy to Netlify
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: nba-analyst-upload/site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Deploy to Netlify (optional)
+        if: ${{ secrets.NETLIFY_AUTH_TOKEN != '' && secrets.NETLIFY_SITE_ID != '' }}
+        continue-on-error: true
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
