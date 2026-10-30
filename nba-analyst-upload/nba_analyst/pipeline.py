@@ -205,7 +205,7 @@ def analyze(store: Store, days_ahead=None, log=print):
     for g in upcoming:
         res = analyze_game(store, g, ctx)
         store.add_qualifying(g, [dict(i["qualifying"], player=i["player"], team=i["team"], opp=i["opp"], stat=i["stat"])
-                                 for i in res["prop_items"] if i.get("qualifying")])
+                                 for i in primary_qualifying(res["prop_items"])])
         for p in res["picks"]:
             if p["market_id"] not in existing:
                 store.add_pick(dict(p, mode="paper"))
@@ -273,8 +273,10 @@ def analyze_game(store: Store, g, ctx, record=True):
         return None
     lines_table = game_lines_table(g, quotes, prob_for)
     _cands, picks = scan_quotes(g, quotes, prob_for, SETTINGS.betting, set(PROP_TYPES.values()), kelly_stake)
+    primary_qualifying(prop_items)
+    legs = value_legs(g, prop_items, fns)
     return {"game": g, "pred": pred, "profiles": profiles, "issues": issues, "quotes": quotes,
-            "prop_items": prop_items, "lines_table": lines_table, "books": sorted({q.book for q in quotes}),
+            "prop_items": prop_items, "lines_table": lines_table, "books": sorted({q.book for q in quotes}), "legs": legs,
             "rest": {home: rest_h, away: rest_a}, "injuries": injuries,
             "rotations": rotations, "out_names": out_names, "dvp": {t: ctx["dvp"].get(t) for t in (home, away)},
             "dvp_league": ctx["dvp"].get("_league"), "dvp_games": {t: ctx["dvp"].get("_games", {}).get(t, 0) for t in (home, away)},
@@ -399,6 +401,61 @@ def _resolve_player(fns, name, stat):
     return c[0] if len(c) == 1 else None
 
 
+def value_legs(g, prop_items, fns):
+    """Candidate parlay legs: for every player x stat, the best-EV priced rung per
+    side at each book, with the simulated hit indicator (packed bits) so joint
+    probabilities can be computed on the same simulated games."""
+    legs = []
+    for it in prop_items:
+        e = fns.get((it["player"].lower(), it["stat"]))
+        if not e or it.get("flags"):
+            continue
+        smp = e["samples"]
+        for side in ("over", "under"):
+            best = {}
+            for r in it["ladder"]:
+                if not r["real"]:
+                    continue
+                p = r["p_over"] if side == "over" else 1 - r["p_over"]
+                for book, prices in (r.get("books") or {}).items():
+                    price = prices.get(side)
+                    if not price or price <= 1.0:
+                        continue
+                    ev = p * price - 1
+                    imp = r.get("implied_over") if side == "over" else r.get("implied_under")
+                    if ev <= 0 or p < 0.5 or (imp is not None and p - imp > SETTINGS.betting.qualify_max_edge):
+                        continue   # no edge, a long shot, or an edge too big to be real
+                    if book not in best or ev > best[book]["ev"]:
+                        best[book] = {"line": r["line"], "p": round(p, 3), "price": price, "ev": round(ev, 3), "quoted_at": r.get("quoted_at"),
+                                      "implied": r.get("implied_over") if side == "over" else r.get("implied_under")}
+            for book, b in best.items():
+                hit = (smp > b["line"]) if side == "over" else (smp < b["line"])
+                legs.append({"game_id": g["game_id"], "player_id": it["player_id"], "player": it["player"], "team": it["team"],
+                             "opp": it["opp"], "stat": it["stat"], "stat_label": it["stat_label"], "side": side, "book": book,
+                             "proj": it.get("sim", {}).get("median"), "robust": (e["robust_fn"](b["line"], side) if e.get("robust_fn") else None),
+                             "qualifying": bool(it.get("qualifying") and it["qualifying"]["line"] == b["line"] and it["qualifying"]["side"] == side),
+                             "hit": np.packbits(hit), "n": len(hit), **b})
+    return legs
+
+
+def primary_qualifying(items):
+    """One bet per player per game: several stats of the same player rise and fall
+    together, so only the strongest qualifying rung (probability, then EV) is
+    logged and ranked; the others stay visible on the player's page."""
+    best = {}
+    for it in items:
+        q = it.get("qualifying")
+        if not q:
+            continue
+        key = (it["player_id"], it["team"])
+        if key not in best or (q["p"], q["ev"] or 0) > (best[key]["qualifying"]["p"], best[key]["qualifying"]["ev"] or 0):
+            best[key] = it
+    for it in items:
+        if it.get("qualifying"):
+            it["qualifying"]["primary"] = it is best.get((it["player_id"], it["team"]))
+    return [it for it in best.values()]
+
+
 def calibrate(p, cfg=None):
     """Platt scaling learned by `backtest`; identity until fitted."""
     cfg = cfg or SETTINGS.betting
@@ -418,6 +475,7 @@ def prop_fns(g, ctx, rotations, out_names, player_ctx, pred=None, rest=None, dtd
     dtd_names = dtd_names or {}
     out = {}
     p_blow = sim.blowout_probability(pred, SETTINGS.model.margin_sd) if pred else 0.12
+    gdraws = sim.game_draws(g["game_id"], cfg.n_sims, p_blow)
     for team in (home, away):
         opp = away if team == home else home
         outs = {n.lower() for n in out_names.get(team, [])}
@@ -446,7 +504,7 @@ def prop_fns(g, ctx, rotations, out_names, player_ctx, pred=None, rest=None, dtd
             for st in ("pts", "reb", "ast", "tpm", "stl", "blk"):
                 mfs[st], minfo[st] = pl.matchup_factor(player_ctx.get("dvp"), opp, prof.get("position"), st)
             seed = abs(hash((g["game_id"], prof["player_id"]))) % (2 ** 32)
-            base = sim.simulate(params, cfg.n_sims, mfs, pf, p_blow, b2b, seed=seed)
+            base = sim.simulate(params, cfg.n_sims, mfs, pf, p_blow, b2b, seed=seed, game=gdraws)
             scen = {}
             for name in ("more_minutes", "fewer_minutes", "blowout", "tough_matchup", "favorable_matchup"):
                 scen[name] = sim.simulate(params, cfg.n_sims_scenario, mfs, pf, p_blow, b2b, scenario=name, seed=seed + 1)

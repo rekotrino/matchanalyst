@@ -16,6 +16,7 @@ class Quote:
     team: Optional[str] = None       # team abbr the line applies to (spreads) or player's team
     liquidity: Optional[float] = None
     note: Optional[str] = None
+    ts: Optional[str] = None         # when this price was fetched (ISO); None = unknown
 
     @property
     def implied(self):

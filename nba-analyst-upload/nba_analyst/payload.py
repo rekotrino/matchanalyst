@@ -12,6 +12,7 @@ from .model.game_model import fair_markets
 from .pipeline import analyze_game, build_context, performance, qualifying_performance
 from .scanner import select_daily
 from .storage import Store
+from .value import build_value
 
 
 def _num(v, nd=3):
@@ -151,7 +152,7 @@ def build_payload(store: Store, days_ahead=None):
             if a is not None:
                 item["actual"] = None if (a.get("dnp") or not a.get("min")) else a.get(item["stat"])
             q = item.get("qualifying")
-            if q:
+            if q and q.get("primary"):
                 logged = qlog.get((g["game_id"], item["player"].lower(), item["stat"], q["line"], q["side"]))
                 if item.get("actual") is not None:
                     q["actual"] = item["actual"]
@@ -189,7 +190,10 @@ def build_payload(store: Store, days_ahead=None):
     hist = store.pick_history()
     perf = performance(store)
     b, m = SETTINGS.betting, SETTINGS.model
+    now = datetime.now(ET)
+    value = _round(build_value(results, now, now.isoformat(timespec="minutes")))
     return {
+        "value": value,
         "generated_at": datetime.now(ET).isoformat(timespec="minutes"),
         "season_label": f"{ctx['season'] - 1}-{str(ctx['season'])[2:]}",
         "n_cur_games": ctx["n_cur_games"], "n_prior_games": ctx["n_prior_games"],

@@ -189,7 +189,7 @@ def daily_digest(ctx, results, perf):
     L.append("")
     # ---- qualifying player props (strict filter) ----
     b = SETTINGS.betting
-    quals = [(r["game"], i) for r in results for i in r.get("prop_items", []) if i.get("qualifying")]
+    quals = [(r["game"], i) for r in results for i in r.get("prop_items", []) if i.get("qualifying") and i["qualifying"].get("primary")]
     quals.sort(key=lambda t: (-t[1]["qualifying"]["p"], -(t[1]["qualifying"]["ev"] or 0)))
     L.append("## Qualifying player props")
     L.append(f"Filter: simulated P ≥ {100 * b.qualify_prob:.0f}% over {b.n_sims:,} games · EV ≥ {100 * b.qualify_min_ev:+.0f}% · "

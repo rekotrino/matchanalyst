@@ -148,7 +148,15 @@ def player_params(games, prior_games=None, minutes_bump=0.0, min_override=None):
     }
 
 
-def simulate(params, n=N_SIMS, matchup=None, pace=1.0, p_blowout=0.0, b2b=False, scenario=None, seed=None):
+def game_draws(game_id, n=N_SIMS, p_blowout=0.0):
+    """Game-level random events shared by every player in the game (a blowout
+    hits all of them at once), so parlays across teammates and opponents can
+    be evaluated on jointly simulated games."""
+    rng = np.random.default_rng(abs(hash(("game", game_id))) % (2 ** 32))
+    return {"blow": rng.random(n) < p_blowout}
+
+
+def simulate(params, n=N_SIMS, matchup=None, pace=1.0, p_blowout=0.0, b2b=False, scenario=None, seed=None, game=None):
     """Simulate n games. matchup: {stat: multiplier} from what the opponent allows.
     Returns {stat: np.ndarray} including minutes."""
     sc = SCENARIOS.get(scenario or "base", {}) if isinstance(scenario, str) else (scenario or {})
@@ -160,7 +168,10 @@ def simulate(params, n=N_SIMS, matchup=None, pace=1.0, p_blowout=0.0, b2b=False,
     minutes = rng.normal(pm, params["min_sd"], n)
     # disruptions: blowout (starters sit, bench plays), foul trouble, random early exit
     pb = 1.0 if sc.get("force_blowout") else p_blowout
-    blow = rng.random(n) < pb
+    if game is not None and len(game["blow"]) == n and not sc.get("force_blowout"):
+        blow = game["blow"]
+    else:
+        blow = rng.random(n) < pb
     if pm >= 26:
         minutes = np.where(blow, minutes * rng.uniform(0.72, 0.9, n), minutes)
     else:

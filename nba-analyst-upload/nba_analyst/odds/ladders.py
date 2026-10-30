@@ -153,8 +153,9 @@ def build_prop_items(game, fns, quotes, standard_lines, cfg, stat_label, dtd_nam
             ev_u = None if bu is None else round(p_u * bu.price - 1, 3)
             rob_o = e["robust_fn"](line, "over") if e.get("robust_fn") else None
             rob_u = e["robust_fn"](line, "under") if e.get("robust_fn") else None
+            quoted_at = max((q.ts for q in qs if q.ts), default=None)
             ladder.append({
-                "line": line, "p_over": round(p, 3),
+                "line": line, "p_over": round(p, 3), "quoted_at": quoted_at,
                 "implied_over": None if imp_o is None else round(imp_o, 3), "implied_under": None if imp_u is None else round(imp_u, 3),
                 "ev_over": ev_o, "ev_under": ev_u,
                 "robust_over": None if rob_o is None else round(rob_o, 3), "robust_under": None if rob_u is None else round(rob_u, 3),
@@ -221,6 +222,7 @@ def game_lines_table(game, quotes, prob_fn):
         b = best_quote(qs)
         rows.append({"market": market, "side": side, "line": line, "our_prob": round(p, 3),
                      "best_price": round(b.price, 3), "best_book": b.book, "edge": round(p - 1 / b.price, 3),
+                     "quoted_at": max((q.ts for q in qs if q.ts), default=None),
                      "books": {q.book: round(q.price, 3) for q in sorted(qs, key=lambda x: -x.price)},
                      "liquidity": next((q.liquidity for q in qs if q.book == "polymarket"), None)})
     order = {"moneyline": 0, "spreads": 1, "totals": 2}

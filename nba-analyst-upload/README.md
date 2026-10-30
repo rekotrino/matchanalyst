@@ -117,6 +117,36 @@ minutes restrictions that are not on ESPN's injury report. Treat "availability
 verified" as "no red flag in the data", and still check the news for a late
 scratch.
 
+## Profitability & Value Intelligence (the Value tab)
+
+The engine answers "what is likely to happen"; the Value tab answers "which of
+those is worth betting on at the prices actually available"
+(`nba_analyst/value.py`, reusing the engine's samples and quotes, nothing is
+re-simulated). For every priced selection (player-prop rungs and game lines):
+best price per side across books, implied probability with the margin removed
+where both sides of a line are quoted at one book, EV = P(win) × profit −
+P(loss) × stake per unit, ROI = EV × 100, and a risk class (low ≥ 70% and
+robust to stress scenarios; medium ≥ 60%; high below; stale = price older
+than 6 hours; suspect = edge above 25 points, i.e. a bad line; unverified =
+injury/role flag). The table sorts and filters by probability, EV, ROI,
+player, game, market, side, book and risk; a row expands to the full
+simulation evidence and a "Track this bet" button.
+
+Parlays are built per sportsbook (a parlay lives at one book; Polymarket has
+no parlay product) from the simulated hit indicators, one leg per player.
+Legs in the same game are evaluated on the same 10,000 simulated games, with
+game-level events (a blowout) shared by every player in that game, so the
+joint probability already carries their correlation and the card reports how
+far it sits from the independent product. Five categories: conservative,
+balanced, higher return, probability-optimized, value-optimized; each shows
+every leg, combined odds, joint probability, EV, ROI, payout and risk.
+
+The betting tracker records bets you choose to take (stake, odds, book),
+grades them automatically when the game is in the board's window, lets you
+set results by hand otherwise, and charts cumulative P&L. It lives in the
+browser's local storage, separate from simulations and backtests; export it
+to JSON from time to time.
+
 ## How to read a report
 
 - **Pure model** is what the ratings alone say. Early in the season it is

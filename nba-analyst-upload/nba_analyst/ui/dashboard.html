@@ -133,6 +133,24 @@ select { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid
 .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px; font-size: 12px; margin: 6px 0; }
 .checks .ok::before { content: "✓ "; color: var(--good-text); font-weight: 700; } .checks .bad::before { content: "✗ "; color: var(--away); font-weight: 700; }
 .nobets { padding: 22px; text-align: center; border: 1px dashed var(--line); border-radius: 8px; font-weight: 700; letter-spacing: 0.08em; }
+.ctrl { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 12px; }
+.ctrl select, .ctrl input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.ctrl label { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+.risk { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; }
+.risk.low { background: color-mix(in srgb, var(--good) 22%, var(--surface)); color: var(--good-text); }
+.risk.medium { background: color-mix(in srgb, var(--violet) 22%, var(--surface)); color: var(--ink); }
+.risk.high, .risk.very\ high { background: color-mix(in srgb, var(--away) 25%, var(--surface)); color: var(--ink); }
+.risk.stale, .risk.suspect, .risk.unverified { background: var(--line); color: var(--muted); }
+tr.detail td { background: color-mix(in srgb, var(--line) 35%, var(--surface)); padding: 10px 14px; }
+th.sort { cursor: pointer; user-select: none; } th.sort[aria-sort]::after { content: " ↓"; } th.sort[aria-sort="ascending"]::after { content: " ↑"; }
+.parlays { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.parlay { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 6px; }
+.parlay .legs { display: grid; gap: 3px; font-size: 13px; } .parlay .legs div { display: flex; justify-content: space-between; gap: 8px; }
+.parlay .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 10px; font-size: 12px; } .parlay .kpis b { display: block; font-size: 15px; }
+button.small { font: inherit; font-size: 12px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); cursor: pointer; }
+button.small.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.muted { color: var(--muted); }
+@media (max-width: 640px) { .parlays { grid-template-columns: 1fr; } .parlay .kpis { grid-template-columns: repeat(2, 1fr); } }
 .tag.thin { background: var(--surface-2); color: var(--muted); }
 tr.dim td { color: var(--muted); }
 .sugg { display: grid; gap: 4px; font-size: 13px; }
@@ -149,6 +167,7 @@ tr.dim td { color: var(--muted); }
     <div id="sports" class="sportsw" hidden role="tablist" aria-label="Sport"></div>
     <nav id="nav" aria-label="Views">
       <button data-view="props" aria-current="page">Props</button>
+      <button data-view="value">Value</button>
       <button data-view="board">Board</button>
       <button data-view="games">Games</button>
       <button data-view="players">Players</button>
@@ -179,7 +198,7 @@ tr.dim td { color: var(--muted); }
   let D = null;
   const ALL = {};            // sport -> payload
   const STATES = {};         // sport -> view state, so switching sports keeps your place
-  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null });
+  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null, vsort: 'ev', vdir: -1, vfilter: { side: 'all', kind: 'all', risk: 'all', book: 'all', game: 'all', q: '', minp: 0, minev: 0 }, vopen: null });
   let state = freshState();
   let sport = 'nba';
   try { const saved = JSON.parse(localStorage.getItem('board-state-v2') || '{}'); if (saved.sport) sport = saved.sport; Object.assign(STATES, saved.states || {}); } catch (e) {}
@@ -504,7 +523,7 @@ tr.dim td { color: var(--muted); }
   const QUAL_HEAD = withGame => `<thead><tr>${withGame ? '<th>Game</th>' : ''}<th>Player</th><th>Bet</th><th class="num">Price</th><th class="num">Sim P</th><th class="num">Implied</th><th class="num">EV</th><th class="num">Worst case</th><th class="num">L10 hit</th><th class="num">Median (IQR)</th><th>Status</th></tr></thead>`;
   function qualPanel(rows, withGame, title) {
     const f = D.filter || {};
-    const intro = `<p class="note">Every one of these passed all six checks: simulated probability ≥ ${pct(f.prob || 0.65, 0)} over ${(f.n_sims || 10000).toLocaleString()} games · EV ≥ ${sg(100 * (f.min_ev || 0.03))}% at the best price · the player's real L10 hit rate on that exact line ≥ ${pct(f.hit_rate || 0.6, 0)} · worst-case scenario still ≥ ${pct(f.robust || 0.55, 0)} · matchup not adverse · availability verified (no injury flag, stable role, ${f.min_games || 8}+ games with the team). Ranked by probability, then EV.</p>`;
+    const intro = `<p class="note">Every one of these passed all six checks: simulated probability ≥ ${pct(f.prob || 0.65, 0)} over ${(f.n_sims || 10000).toLocaleString()} games · EV ≥ ${sg(100 * (f.min_ev || 0.03))}% at the best price · the player's real L10 hit rate on that exact line ≥ ${pct(f.hit_rate || 0.6, 0)} · worst-case scenario still ≥ ${pct(f.robust || 0.55, 0)} · matchup not adverse · availability verified (no injury flag, stable role, ${f.min_games || 8}+ games with the team) · edge plausible. One bet per player per game (a player's stats rise and fall together); the player page shows the rest. Ranked by probability, then EV.</p>`;
     return `<section class="card"><h2>${esc(title)}</h2>${intro}${rows.length ? `<div class="table-wrap"><table>${QUAL_HEAD(withGame)}<tbody>${rows.map(q => qualRow(q, withGame)).join('')}</tbody></table></div>` : '<div class="nobets">NO QUALIFYING BETS</div><p class="note">Nothing on this slate passes every check. That is the filter working, not a bug: the high-probability lines are priced short, the priced-well lines are not high-probability enough, or availability is unverified.</p>'}</section>`;
   }
 
@@ -647,11 +666,114 @@ tr.dim td { color: var(--muted); }
     return propsMatches();
   }
 
+  // ---------- Profitability & Value Intelligence ----------
+  const TRACK_KEY = 'bet-tracker-v1';
+  const loadTracker = () => { try { return JSON.parse(localStorage.getItem(TRACK_KEY) || '[]'); } catch (e) { return []; } };
+  const saveTracker = rows => { try { localStorage.setItem(TRACK_KEY, JSON.stringify(rows)); } catch (e) {} };
+  const riskTag = r => `<span class="risk ${esc(r || '')}">${esc(r || '–')}</span>`;
+  const ago = s => s.age_h == null ? '<span class="muted">age unknown</span>' : s.age_h < 1 ? `${Math.round(60 * s.age_h)} min old` : `${s.age_h.toFixed(1)} h old`;
+  const betKey = s => [s.game_id, s.player || s.team || '', s.stat || s.market, s.side, s.line, s.book].join('|');
+  function singleDetail(s) {
+    const g = D.games.find(x => x.game.game_id === s.game_id), it = g && s.player_id ? g.props.find(x => x.player_id === s.player_id && x.stat === s.stat) : null;
+    const books = Object.entries(s.books || {}).sort((a, b) => b[1] - a[1]).map(([b, p]) => `${esc(b)} ${Number(p).toFixed(2)}`).join(' · ');
+    const sim = it && it.sim ? `${distStrip(it.sim, s.line)}<p class="note">10,000 simulated games: mean ${f1(it.sim.mean)} · median ${it.sim.median} · middle 50% ${it.sim.p25}–${it.sim.p75} · floor ${it.sim.p10} · ceiling ${it.sim.p90} · minutes ${it.proj_min}. L10 avg ${f1(it.l10_avg)} · season ${f1(it.season_avg)} · ${it.n_games} games with ${esc(it.team)}${it.matchup && it.matchup !== 1 ? ` · matchup ×${it.matchup.toFixed(3)}` : ''}.</p>` : '<p class="note">Game line: priced from the team model (expected score distribution).</p>';
+    const scen = it && it.scenarios ? `<p class="note">Stress scenarios at the qualifying line: ${it.scenarios.map(r => `${SCEN_LABEL[r.scenario] || r.scenario} ${pct(s.side === 'over' ? r.p_over : 1 - r.p_over, 0)}`).join(' · ')}.</p>` : '';
+    const checks = it && it.qualifying && it.qualifying.checks ? `<div class="checks">${Object.entries(it.qualifying.checks).map(([k, v]) => `<span class="${v ? 'ok' : 'bad'}">${esc(k)}</span>`).join('')}</div>` : '';
+    return `<div class="row two"><div>${sim}${scen}${checks}</div><div>
+      <p class="note"><strong>Probability vs profitability.</strong> Simulated ${pct(s.p, 1)}${s.hit10 != null ? ` · real L10 hit rate ${pct(s.hit10, 0)}` : ''}${s.robust != null ? ` · worst scenario ${pct(s.robust, 0)}` : ''}. Best price ${Number(s.price).toFixed(2)}× at ${esc(s.book)} → implied ${s.implied != null ? pct(s.implied, 1) : '–'}${s.implied_devig ? ' (margin removed)' : ' (raw, margin included)'}. EV = ${pct(s.p, 1)} × ${(s.price - 1).toFixed(2)} − ${pct(1 - s.p, 1)} × 1 = <strong>${s.ev >= 0 ? '+' : ''}${s.ev.toFixed(3)}</strong> per unit → ROI <strong>${sg(s.roi, 1)}%</strong>.</p>
+      <p class="note">All books: ${books || '–'}. Price ${ago(s)}${s.stale ? ' · <strong>stale, excluded from counts</strong>' : ''}${s.quoted_at ? ` (${esc(s.quoted_at.replace('T', ' ').slice(0, 16))})` : ''}.</p>
+      <div class="ctrl"><label>Stake <input type="number" min="1" step="1" value="10" style="width:70px" id="stk-${esc(betKey(s)).replace(/[^a-z0-9]/gi, '_')}"></label><button class="small primary" data-track='${esc(JSON.stringify({ kind: s.kind, game_id: s.game_id, game: s.game, date_et: s.date_et, player: s.player, team: s.team, market: s.market, stat: s.stat, side: s.side, line: s.line, price: s.price, book: s.book, p: s.p, key: betKey(s) }))}'>Track this bet</button>${s.player_id ? `<button class="small" data-pplayer="${esc(s.player_id)}" data-pgame="${esc(s.game_id)}">Open player</button>` : `<button class="small" data-game="${esc(s.game_id)}">Open game</button>`}</div></div></div>`;
+  }
+  function singlesTable(rows) {
+    const f = state.vfilter, sortKey = state.vsort, dir = state.vdir;
+    const games = [...new Set((D.value.singles || []).map(s => s.game))].sort(), books = [...new Set((D.value.singles || []).map(s => s.book).filter(Boolean))].sort();
+    let list = rows.filter(s => (f.side === 'all' || s.side === f.side) && (f.kind === 'all' || (f.kind === 'game' ? s.kind === 'game' : s.stat === f.kind)) && (f.risk === 'all' || s.risk === f.risk) && (f.book === 'all' || s.book === f.book) && (f.game === 'all' || s.game === f.game) && s.p >= f.minp && s.roi >= f.minev && (!f.q || ((s.player || '') + ' ' + s.game + ' ' + s.market).toLowerCase().includes(f.q.toLowerCase())));
+    const val = s => sortKey === 'player' ? (s.player || s.team || '') : sortKey === 'game' ? s.game : (s[sortKey] == null ? -Infinity : s[sortKey]);
+    list.sort((a, b) => { const x = val(a), y = val(b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir; });
+    const th = (k, label, cls = '') => `<th class="sort ${cls}" data-vsort="${k}" ${sortKey === k ? `aria-sort="${dir > 0 ? 'ascending' : 'descending'}"` : ''}>${label}</th>`;
+    const stats = [...new Set((D.value.singles || []).filter(s => s.stat).map(s => s.stat))];
+    const sel = (name, opts, cur) => `<select data-vf="${name}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    const ctrl = `<div class="ctrl">
+      <label>Side ${sel('side', [['all', 'all'], ['over', 'over'], ['under', 'under']], f.side)}</label>
+      <label>Market ${sel('kind', [['all', 'all'], ...stats.map(k => [k, statName(k)]), ['game', 'game lines']], f.kind)}</label>
+      <label>Risk ${sel('risk', [['all', 'all'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['stale', 'stale'], ['suspect', 'suspect']], f.risk)}</label>
+      <label>Book ${sel('book', [['all', 'all'], ...books.map(b => [b, b])], f.book)}</label>
+      <label>Game ${sel('game', [['all', 'all'], ...games.map(g => [g, g])], f.game)}</label>
+      <label>Min P ${sel('minp', [[0, 'any'], [0.55, '55%'], [0.6, '60%'], [0.65, '65%'], [0.7, '70%'], [0.75, '75%']], f.minp)}</label>
+      <label>Min ROI ${sel('minev', [[-1000, 'any'], [0, '> 0%'], [3, '≥ 3%'], [5, '≥ 5%'], [10, '≥ 10%']], f.minev)}</label>
+      <label>Search <input type="search" data-vq value="${esc(f.q)}" placeholder="player, game"></label>
+      <span class="note">${list.length} of ${rows.length}</span></div>`;
+    const body = list.slice(0, 300).map(s => { const k = betKey(s), open = state.vopen === k;
+      return `<tr class="click" data-vopen="${esc(k)}"><td><strong>${esc(s.player || s.team || s.market)}</strong>${s.player ? ` <span class="note">${esc(s.team)}</span>` : ''}</td><td>${esc(s.game)}</td><td>${esc(s.player ? s.market : s.market)}</td><td><strong>${esc(s.side)} ${s.line != null ? s.line : ''}</strong></td><td class="num">${s.proj != null ? s.proj : '–'}</td><td class="num">${pct(s.p, 0)}</td><td class="num"><strong>${Number(s.price).toFixed(2)}×</strong> <span class="note">${esc(s.book || '')}</span></td><td class="num">${s.implied != null ? pct(s.implied, 0) : '–'}</td><td class="num ${s.ev > 0 ? 'edge-pos' : 'edge-neg'}">${s.ev >= 0 ? '+' : ''}${s.ev.toFixed(3)}</td><td class="num ${s.roi > 0 ? 'edge-pos' : 'edge-neg'}">${sg(s.roi, 1)}%</td><td>${riskTag(s.risk)}${s.qualifying ? ' <span class="tag both">Q</span>' : ''}</td></tr>${open ? `<tr class="detail"><td colspan="11">${singleDetail(s)}</td></tr>` : ''}`; }).join('');
+    return `${ctrl}<div class="table-wrap"><table><thead><tr>${th('player', 'Player / side')}${th('game', 'Game')}<th>Market</th><th>Bet</th>${th('proj', 'Projected', 'num')}${th('p', 'Hit prob', 'num')}${th('price', 'Odds (book)', 'num')}${th('implied', 'Implied', 'num')}${th('ev', 'EV / unit', 'num')}${th('roi', 'ROI', 'num')}<th>Risk</th></tr></thead><tbody>${body || '<tr><td colspan="11" class="empty">No selection matches these filters.</td></tr>'}</tbody></table></div>${list.length > 300 ? '<p class="note">Showing the first 300; narrow the filters to see the rest.</p>' : ''}`;
+  }
+  function parlayCard(p) {
+    return `<div class="parlay"><div><span class="tag both">${esc(p.label)}</span><span class="note">${esc(p.book)} · ${p.legs.length} legs · ${p.n_games} game${p.n_games > 1 ? 's' : ''}</span> ${riskTag(p.risk)}</div>
+      <div class="legs">${p.legs.map(l => `<div><span><strong>${esc(l.player)}</strong> <span class="note">${esc(l.team)}</span> ${esc(l.side)} ${l.line} ${esc(l.stat_label)}</span><span class="num">${pct(l.p, 0)} · ${Number(l.price).toFixed(2)}×</span></div>`).join('')}</div>
+      <div class="kpis"><span>Combined odds<b>${p.odds.toFixed(2)}×</b></span><span>Joint probability<b>${pct(p.joint_p, 1)}</b></span><span>Pays on $10<b>$${p.payout_per_10.toFixed(2)}</b></span><span>EV / unit<b class="${p.ev > 0 ? 'edge-pos' : 'edge-neg'}">${p.ev >= 0 ? '+' : ''}${p.ev.toFixed(3)}</b></span><span>Expected ROI<b class="${p.roi > 0 ? 'edge-pos' : 'edge-neg'}">${sg(p.roi, 1)}%</b></span><span>If independent<b>${pct(p.independent_p, 1)}</b></span></div>
+      <div class="note">Correlation: ${esc(p.correlation)}. Joint probability comes from the same 10,000 simulated games for legs that share a game; a player appears once.</div>
+      <div class="ctrl"><label>Stake <input type="number" min="1" step="1" value="10" style="width:70px"></label><button class="small primary" data-track='${esc(JSON.stringify({ kind: 'parlay', game_id: p.legs.map(l => l.game_id).join('+'), game: [...new Set(p.legs.map(l => l.team + ' v ' + l.opp))].join(', '), date_et: state.day || D.today_et, player: p.legs.map(l => l.player).join(' + '), market: p.label + ' parlay', side: p.legs.map(l => `${l.player} ${l.side} ${l.line} ${l.stat_label}`).join(' / '), line: null, price: p.odds, book: p.book, p: p.joint_p, legs: p.legs.map(l => ({ game_id: l.game_id, player_id: l.player_id, player: l.player, stat: l.stat, side: l.side, line: l.line })), key: 'parlay|' + p.book + '|' + p.legs.map(l => l.player_id + l.stat + l.side + l.line).join('|') }))}'>Track this parlay</button></div></div>`;
+  }
+  function trackerSection() {
+    const rows = loadTracker();
+    // auto-grade from the data in the window: a single's actual value, or every leg of a parlay
+    const actualFor = (game_id, player_id, stat) => { const g = D.games.find(x => x.game.game_id === game_id); if (!g || !g.game.completed) return undefined; const it = g.props.find(x => x.player_id === player_id && x.stat === stat); return it ? (it.actual === undefined ? null : it.actual) : undefined; };
+    let changed = false;
+    rows.forEach(r => { if (r.result) return;
+      if (r.kind === 'parlay') { const outs = r.legs.map(l => actualFor(l.game_id, l.player_id, l.stat)); if (outs.some(o => o === undefined)) return; if (outs.some(o => o === null)) { r.result = 'void'; } else { const hits = r.legs.map((l, i) => l.side === 'over' ? outs[i] > l.line : outs[i] < l.line); r.result = hits.every(Boolean) ? 'win' : 'loss'; r.actual = outs.join(' / '); } }
+      else if (r.kind === 'prop') { const g = D.games.find(x => x.game.game_id === r.game_id); const it = g && g.game.completed ? g.props.find(x => x.player === r.player && x.stat === r.stat) : null; if (!it || it.actual === undefined) return; if (it.actual === null) r.result = 'void'; else { r.actual = it.actual; r.result = it.actual === r.line ? 'push' : ((it.actual > r.line) === (r.side === 'over') ? 'win' : 'loss'); } }
+      if (r.result) { r.pnl = r.result === 'win' ? +(r.stake * (r.price - 1)).toFixed(2) : r.result === 'loss' ? -r.stake : 0; r.graded_at = D.generated_at; changed = true; } });
+    if (changed) saveTracker(rows);
+    const graded = rows.filter(r => r.result && r.result !== 'void' && r.result !== 'push');
+    const staked = graded.reduce((a, r) => a + r.stake, 0), pnl = graded.reduce((a, r) => a + (r.pnl || 0), 0), wins = graded.filter(r => r.result === 'win').length;
+    const chart = graded.length ? pnlLine(graded.map(r => ({ result: r.result, pnl: r.pnl, outcome: (r.player || r.market) + ' ' + (r.side || ''), price: r.price }))) : '';
+    const byWeek = {}; graded.forEach(r => { const w = r.date_et.slice(0, 10); byWeek[w] = (byWeek[w] || 0) + (r.pnl || 0); });
+    const weeks = Object.keys(byWeek).sort();
+    const bars = weeks.length ? columns(weeks.map(w => byWeek[w]), weeks.map(w => w.slice(5)), { color: 'var(--seq)', label: 'P&L by day', tips: weeks.map(w => `${w}: ${money(byWeek[w])}`) }) : '';
+    const trs = rows.slice().reverse().map((r, i) => `<tr><td>${esc(r.date_et || '')}</td><td>${esc(r.game)}</td><td><strong>${esc(r.player || r.team || '')}</strong></td><td>${esc(r.market)}</td><td>${esc(r.side)}${r.line != null ? ' ' + r.line : ''}</td><td class="num">${Number(r.price).toFixed(2)}× <span class="note">${esc(r.book || '')}</span></td><td class="num">$${Number(r.stake).toFixed(2)}</td><td><select data-tres="${esc(r.key)}"><option value="" ${!r.result ? 'selected' : ''}>open</option>${['win', 'loss', 'push', 'void'].map(v => `<option value="${v}" ${r.result === v ? 'selected' : ''}>${v}</option>`).join('')}</select>${r.actual != null ? ` <span class="note">${esc(String(r.actual))}</span>` : ''}</td><td class="num">${r.pnl != null ? money(r.pnl) : '–'}</td><td class="num">${r.pnl != null && r.stake ? sg(100 * r.pnl / r.stake, 0) + '%' : '–'}</td><td><button class="small" data-tdel="${esc(r.key)}">✕</button></td></tr>`).join('');
+    return `<section class="card"><h2>Betting tracker <span class="note">actual bets you chose to record · stored in this browser · separate from simulations and backtests</span></h2>
+      <div class="tiles"><div class="tile"><div class="label">Recorded</div><div class="value">${rows.length}</div><div class="delta">${rows.filter(r => !r.result).length} open</div></div><div class="tile"><div class="label">Record</div><div class="value">${wins}–${graded.length - wins}</div><div class="delta">${graded.length ? pct(wins / graded.length, 0) + ' hit rate' : 'nothing graded yet'}</div></div><div class="tile"><div class="label">Profit / loss</div><div class="value">${money(pnl)}</div><div class="delta">on $${staked.toFixed(0)} staked</div></div><div class="tile"><div class="label">Actual ROI</div><div class="value">${staked ? sg(100 * pnl / staked, 1) + '%' : '—'}</div><div class="delta">graded bets only</div></div></div>
+      ${graded.length ? `<div class="row two"><div><h3>Cumulative P&amp;L</h3>${chart}</div><div><h3>By day</h3>${bars}</div></div>` : ''}
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Game</th><th>Player</th><th>Market</th><th>Selection</th><th class="num">Odds</th><th class="num">Stake</th><th>Result</th><th class="num">P/L</th><th class="num">ROI</th><th></th></tr></thead><tbody>${trs || '<tr><td colspan="11" class="empty">Nothing recorded. Use "Track this bet" on any selection or parlay above. Results fill in automatically when the game is in the window; set them by hand otherwise.</td></tr>'}</tbody></table></div>
+      <div class="ctrl"><button class="small" data-texport>Export JSON</button><label>Import <input type="file" accept="application/json" data-timport></label><span class="note">Export regularly: browser storage can be cleared.</span></div></section>`;
+  }
+  function viewValue() {
+    const V = D.value;
+    if (!V) return `<div><h1>Profitability &amp; Value Intelligence</h1><p class="sub">Not available for this sport yet: the value layer needs the simulation engine's samples, which only the NBA engine produces so far.</p></div>${trackerSection()}`;
+    const S = V.summary, risk = S.risk || {}, riskTot = Object.values(risk).reduce((a, b) => a + b, 0);
+    const single = s => s ? `${esc(s.player || s.team || s.market)} ${esc(s.side)} ${s.line != null ? s.line : ''} ${esc(s.player ? s.market : '')} · ${pct(s.p, 0)} at ${Number(s.price).toFixed(2)}× (${esc(s.book)}) · ROI ${sg(s.roi, 1)}%` : '—';
+    const parlayLine = p => p ? `${p.legs.length}-leg ${esc(p.label.toLowerCase())} at ${esc(p.book)} · ${p.odds.toFixed(2)}× · joint ${pct(p.joint_p, 0)} · ROI ${sg(p.roi, 1)}%` : '—';
+    const riskBar = riskTot ? `<div class="legend">${['low', 'medium', 'high'].filter(k => risk[k]).map(k => `<span>${riskTag(k)} ${risk[k]} (${pct(risk[k] / riskTot, 0)})</span>`).join('')}</div>` : '<span class="note">no positive-EV selections</span>';
+    const cats = Object.keys(V.parlays || {});
+    ensureDay();
+    const dayOf = id => { const g = D.games.find(x => x.game.game_id === id); return g ? g.game.date_et : null; };
+    const singles = (V.singles || []).filter(x => !state.day || x.date_et === state.day);
+    const parlaysOf = c => (V.parlays[c] || []).filter(p => !state.day || p.legs.every(l => dayOf(l.game_id) === state.day));
+    return `<div><div class="eyebrow">${esc(D.season_label)} season · prices as of ${esc((V.generated_at || D.generated_at).replace('T', ' '))}</div><h1>Profitability &amp; Value Intelligence</h1>
+      <p class="sub">The engine says what is likely to happen. This page asks which of those outcomes are worth betting on at the prices actually available: expected value = P(win) × profit − P(loss) × stake, with the bookmaker's margin removed from the implied probability wherever both sides of a line are quoted. A likely outcome at a short price is not a profitable bet. Prices older than ${V.stale_hours} hours are shown but excluded from the counts and parlays.</p></div>
+      ${dayBar()}
+      <div class="tiles">
+        <div class="tile"><div class="label">Qualifying opportunities</div><div class="value">${S.n_qualifying}</div><div class="delta">passed every engine check · whole window</div></div>
+        <div class="tile"><div class="label">Positive-EV bets</div><div class="value">${S.n_positive_ev}</div><div class="delta">of ${S.n_singles} priced selections</div></div>
+        <div class="tile"><div class="label">Average expected ROI</div><div class="value">${S.avg_roi != null ? sg(S.avg_roi, 1) + '%' : '—'}</div><div class="delta">across positive-EV singles</div></div>
+        <div class="tile"><div class="label">Parlays found</div><div class="value">${S.n_parlays}</div><div class="delta">${cats.length} categories · per sportsbook</div></div>
+      </div>
+      <section class="card"><h2>Headlines</h2><dl class="kv"><dt>Highest probability</dt><dd>${single(S.highest_prob)}</dd><dt>Best value</dt><dd>${single(S.best_value)}</dd><dt>Best parlay</dt><dd>${parlayLine(S.best_parlay)}</dd><dt>Risk distribution</dt><dd>${riskBar}</dd><dt>Books in play</dt><dd>${esc((S.books || []).join(', ') || 'none')}</dd></dl></section>
+      <section class="card"><h2>Individual bets <span class="note">${state.day ? esc(dayLabel(state.day)) : ''}</span></h2><p class="note">Every priced selection that is either positive-EV or ≥ 65% likely. Click a row for the full analysis and to record it. <strong>Q</strong> = passed the engine's qualifying filter. Risk: low = ≥ 70% and robust to stress scenarios; medium = ≥ 60%; high = below; stale / suspect / unverified = do not bet on this information.</p>${singlesTable(singles)}</section>
+      <section class="card"><h2>Parlays</h2><p class="note">Built per sportsbook from the engine's simulated games, one leg per player. Legs in the same game are evaluated on the same simulated games, so the joint probability already includes their correlation (a blowout hits every player at once). Combined odds are the product of each leg's price; EV uses the joint probability, not the product of marginals.</p>
+        ${cats.map(c => { const ps = parlaysOf(c); return `<h3>${esc(CAT_LABEL[c] || c)} <span class="note">${CAT_DESC[c] || ''}</span></h3>${ps.length ? `<div class="parlays">${ps.map(parlayCard).join('')}</div>` : '<p class="note">None found that meets the category\'s rules at any book.</p>'}`; }).join('')}</section>
+      ${trackerSection()}
+      <section class="card"><h2>Data integrity</h2><ul class="note" style="margin:0;padding-left:18px">${(V.missing || []).map(m => `<li>${esc(m)}</li>`).join('')}<li>Prices and probabilities are recomputed on every data refresh (every 30 minutes on the hosted board); nothing on this page is cached between builds.</li></ul></section>`;
+  }
+  const CAT_LABEL = { conservative: 'Conservative', balanced: 'Balanced', higher_return: 'Higher return', probability_optimized: 'Probability-optimized', value_optimized: 'Value-optimized' };
+  const CAT_DESC = { conservative: '2–3 legs, each ≥ 72%, joint ≥ 40%, positive EV', balanced: '3 legs, each ≥ 62%, joint ≥ 22%, best EV', higher_return: '4–5 legs, each ≥ 55%, combined odds ≥ 6×, best EV', probability_optimized: 'highest joint probability, 2–3 legs', value_optimized: 'highest EV, 2–4 legs, joint ≥ 15%' };
+
   // ---------- render / routing ----------
   function render() {
     const app = $('#app');
     let html;
     if (state.view === 'props') html = viewProps();
+    else if (state.view === 'value') html = viewValue();
     else if (state.view === 'game') html = viewGame(state.game);
     else if (state.view === 'games') html = viewGames();
     else if (state.view === 'players') html = viewPlayers();
@@ -671,10 +793,19 @@ tr.dim td { color: var(--muted); }
     const gr = e.target.closest('[data-game]'); if (gr) { state.view = 'game'; state.game = gr.dataset.game; state.mfilter = 'all'; render(); return; }
     const mf = e.target.closest('[data-mf]'); if (mf) { state.mfilter = mf.dataset.mf; render(); return; }
     const dy = e.target.closest('[data-day]'); if (dy && dy.dataset.day) { state.day = dy.dataset.day; state.pgame = null; state.pplayer = null; render(); return; }
+    const vs = e.target.closest('[data-vsort]'); if (vs) { if (state.vsort === vs.dataset.vsort) state.vdir = -state.vdir; else { state.vsort = vs.dataset.vsort; state.vdir = ['player', 'game'].includes(vs.dataset.vsort) ? 1 : -1; } render(); return; }
+    const tk = e.target.closest('[data-track]'); if (tk) { const bet = JSON.parse(tk.dataset.track); const inp = tk.parentElement.querySelector('input[type=number]'); const stake = Math.max(1, Number(inp && inp.value) || 10); const rows = loadTracker(); if (rows.some(r => r.key === bet.key)) { tk.textContent = 'Already tracked'; return; } rows.push(Object.assign(bet, { stake, recorded_at: new Date().toISOString(), result: null, pnl: null })); saveTracker(rows); tk.textContent = 'Tracked ✓'; return; }
+    const td = e.target.closest('[data-tdel]'); if (td) { saveTracker(loadTracker().filter(r => r.key !== td.dataset.tdel)); render(); return; }
+    const tx = e.target.closest('[data-texport]'); if (tx) { const blob = new Blob([JSON.stringify(loadTracker(), null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'bet-tracker.json'; a.click(); return; }
+    const vo = e.target.closest('[data-vopen]'); if (vo && !e.target.closest('button,select,input,a')) { state.vopen = state.vopen === vo.dataset.vopen ? null : vo.dataset.vopen; render(); return; }
     const pr = e.target.closest('[data-player]'); if (pr) { state.player = pr.dataset.player; render(); return; }
   });
   document.addEventListener('keydown', e => { if (e.key === 'Enter') { const t = e.target.closest('[data-game],[data-player],[data-pgame],[data-pplayer]'); if (t) t.click(); } });
-  document.addEventListener('change', e => { if (e.target.id === 'teamsel') { state.team = e.target.value; state.player = null; render(); } });
+  document.addEventListener('change', e => { if (e.target.id === 'teamsel') { state.team = e.target.value; state.player = null; render(); }
+    const vf = e.target.closest('[data-vf]'); if (vf) { const v = vf.value; state.vfilter[vf.dataset.vf] = isNaN(Number(v)) || v === 'all' ? v : Number(v); render(); return; }
+    const tr = e.target.closest('[data-tres]'); if (tr) { const rows = loadTracker(); const r = rows.find(x => x.key === tr.dataset.tres); if (r) { r.result = tr.value || null; r.pnl = !r.result ? null : r.result === 'win' ? +(r.stake * (r.price - 1)).toFixed(2) : r.result === 'loss' ? -r.stake : 0; r.graded_at = r.result ? new Date().toISOString() : null; saveTracker(rows); } render(); return; }
+    const ti = e.target.closest('[data-timport]'); if (ti && ti.files[0]) { const fr = new FileReader(); fr.onload = () => { try { const inc = JSON.parse(fr.result); if (Array.isArray(inc)) { const rows = loadTracker(); const keys = new Set(rows.map(r => r.key)); inc.forEach(r => { if (r && r.key && !keys.has(r.key)) rows.push(r); }); saveTracker(rows); render(); } } catch (err) { ti.insertAdjacentHTML('afterend', '<span class="note"> not a tracker export</span>'); } }; fr.readAsText(ti.files[0]); return; } });
+  document.addEventListener('input', e => { const q = e.target.closest('[data-vq]'); if (q) { state.vfilter.q = q.value; clearTimeout(window.__vq); window.__vq = setTimeout(() => { const pos = q.selectionStart; render(); const nq = document.querySelector('[data-vq]'); if (nq) { nq.focus(); nq.setSelectionRange(pos, pos); } }, 250); } });
 
   function showSport(key) {
     if (!ALL[key]) return;

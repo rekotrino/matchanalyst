@@ -350,7 +350,7 @@ class Store:
                 continue
             seen.add(k)
             out.append(_Q(r["game_id"], r["book"], r["market"], r["side"], r["price"], line=r["line"],
-                          player=r["player"] or None, team=r["team"], liquidity=r["liquidity"], note=r["note"]))
+                          player=r["player"] or None, team=r["team"], liquidity=r["liquidity"], note=r["note"], ts=r["fetched_at"]))
         return out
 
     def commit(self):
