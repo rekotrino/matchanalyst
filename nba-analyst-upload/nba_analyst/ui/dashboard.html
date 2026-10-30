@@ -210,7 +210,7 @@ tr.dim td { color: var(--muted); }
   let D = null;
   const ALL = {};            // sport -> payload
   const STATES = {};         // sport -> view state, so switching sports keeps your place
-  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null, vsort: 'ev', vdir: -1, vfilter: { side: 'all', kind: 'all', risk: 'all', book: 'all', game: 'all', q: '', minp: 0, minev: 0 }, vopen: null, msec: 'opps', mopen: null, msort: 'score', strategy: 'prediction' });
+  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null, vsort: 'ev', vdir: -1, vfilter: { side: 'all', kind: 'all', risk: 'all', book: 'all', game: 'all', q: '', minp: 0, minev: 0 }, vopen: null, msec: 'opps', mopen: null, msort: 'score', strategy: 'prediction', qf: null });
   let state = freshState();
   let sport = 'nba';
   try { const saved = JSON.parse(localStorage.getItem('board-state-v2') || '{}'); if (saved.sport) sport = saved.sport; Object.assign(STATES, saved.states || {}); } catch (e) {}
@@ -552,10 +552,58 @@ tr.dim td { color: var(--muted); }
     return `<tr class="click" data-pplayer="${esc(g ? g.props.find(it => it.player === q.player)?.player_id || '' : '')}" data-pgame="${esc(q.game_id)}">${withGame ? `<td>${esc(q.team + (g && g.game.home === q.team ? ' vs ' : ' @ ') + q.opp)}</td>` : ''}<td><strong>${esc(q.player)}</strong> <span class="note">${esc(q.team)}</span></td><td><strong>${q.side} ${q.line}</strong> ${statName(q.stat)}</td><td class="num"><strong>${Number(q.price).toFixed(2)}×</strong> <span class="note">${esc(q.book || '')}</span></td><td class="num">${pct(q.p, 0)}</td><td class="num">${q.implied != null ? pct(q.implied, 0) : '–'}</td><td class="num edge-pos">${sg(100 * q.ev)}%</td><td class="num">${q.robust != null ? pct(q.robust, 0) : '–'}</td><td class="num">${q.hit10 != null ? pct(q.hit10, 0) : '–'}</td><td class="num">${q.sim ? `${q.sim.median} <span class="note">(${q.sim.p25}–${q.sim.p75})</span>` : '–'}</td><td>${res}</td></tr>`;
   }
   const QUAL_HEAD = withGame => `<thead><tr>${withGame ? '<th>Game</th>' : ''}<th>Player</th><th>Bet</th><th class="num">Price</th><th class="num">Sim P</th><th class="num">Implied</th><th class="num">EV</th><th class="num">Worst case</th><th class="num">L10 hit</th><th class="num">Median (IQR)</th><th>Status</th></tr></thead>`;
+  const QF_DEFAULT = () => { const f = D.filter || {}; return { prob: f.prob || 0.65, ev: f.min_ev != null ? f.min_ev : 0.03, games: f.min_games || 8, hit: f.hit_rate || 0.6, robust: f.robust || 0.55, flags: 'strict', side: 'all', stat: 'all', book: 'all', matchup: true, maxedge: 0.25 }; };
+  const QF_LABEL = { flags: { strict: 'no flags at all', soft: 'allow small sample', any: 'ignore flags' } };
+  function computeQualifying(games, f) {
+    const out = [];
+    games.forEach(g => g.props.forEach(it => {
+      const flags = it.flags || [], hard = flags.filter(x => x !== 'small sample');
+      if (f.flags === 'strict' && flags.length) return;
+      if (f.flags === 'soft' && hard.length) return;
+      if ((it.n_games || 0) < f.games) return;
+      if (f.stat !== 'all' && it.stat !== f.stat) return;
+      let best = null;
+      (it.ladder || []).forEach(x => { if (!x.real) return;
+        ['over', 'under'].forEach(side => { if (f.side !== 'all' && side !== f.side) return;
+          const price = side === 'over' ? x.over_price : x.under_price; if (!price) return;
+          const book = side === 'over' ? x.best_over_book : x.best_under_book; if (f.book !== 'all' && book !== f.book) return;
+          const p = side === 'over' ? x.p_over : 1 - x.p_over, ev = side === 'over' ? x.ev_over : x.ev_under, imp = side === 'over' ? x.implied_over : x.implied_under;
+          const rob = side === 'over' ? x.robust_over : x.robust_under, hit = x.hit10 == null ? null : (side === 'over' ? x.hit10 : 1 - x.hit10);
+          const checks = { 'simulated probability': p >= f.prob, 'positive EV': ev != null && ev >= f.ev, 'last-10 hit rate': f.hit <= 0 || (hit != null && (x.hit_n || 0) >= Math.min(5, f.games) && hit >= f.hit), 'robust across scenarios': f.robust <= 0 || (rob != null && rob >= f.robust), 'matchup not adverse': !f.matchup || (side === 'over' ? (it.matchup || 1) >= 0.97 : (it.matchup || 1) <= 1.03), 'edge plausible': imp == null || (p - imp) <= f.maxedge };
+          if (!Object.values(checks).every(Boolean)) return;
+          const cand = { line: x.line, side, p, ev, price, book, implied: imp, robust: rob, hit10: hit, checks };
+          if (!best || cand.p > best.p || (cand.p === best.p && (cand.ev || 0) > (best.ev || 0))) best = cand; });
+      });
+      if (!best) return;
+      const q = Object.assign(best, { game_id: g.game.game_id, date_et: g.game.date_et, completed: !!g.game.completed, player: it.player, team: it.team, opp: it.opp, stat: it.stat, stat_label: it.stat_label, sim: it.sim, flags });
+      if (it.actual != null) { q.actual = it.actual; q.result = it.actual === q.line ? 'push' : ((it.actual > q.line) === (q.side === 'over') ? 'win' : 'loss'); }
+      out.push(q);
+    }));
+    out.sort((a, b) => b.p - a.p || (b.ev || 0) - (a.ev || 0));
+    return out;
+  }
+  function qualFilterBar(f, n) {
+    const custom = !!state.qf;
+    const opt = (name, opts, cur, fmt) => `<select data-qf="${name}">${opts.map(v => `<option value="${v}" ${String(v) === String(cur) ? 'selected' : ''}>${fmt ? fmt(v) : v}</option>`).join('')}</select>`;
+    const stats = [...new Set(D.games.flatMap(g => g.props.map(it => it.stat)))], books = [...new Set(D.games.flatMap(g => g.props.flatMap(it => it.books || [])))].sort();
+    return `<div class="ctrl" style="margin-top:0">
+      <label>Min probability ${opt('prob', [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8], f.prob, v => pct(v, 0))}</label>
+      <label>Min EV ${opt('ev', [-1, 0, 0.01, 0.03, 0.05, 0.1], f.ev, v => v < 0 ? 'any' : sg(100 * v) + '%')}</label>
+      <label>Min games ${opt('games', [3, 4, 5, 6, 8, 10, 15], f.games)}</label>
+      <label>Min L10 hit ${opt('hit', [0, 0.5, 0.6, 0.7, 0.8], f.hit, v => v ? pct(v, 0) : 'off')}</label>
+      <label>Worst case ≥ ${opt('robust', [0, 0.45, 0.5, 0.55, 0.6, 0.7], f.robust, v => v ? pct(v, 0) : 'off')}</label>
+      <label>Flags ${opt('flags', ['strict', 'soft', 'any'], f.flags, v => QF_LABEL.flags[v])}</label>
+      <label>Side ${opt('side', ['all', 'over', 'under'], f.side)}</label>
+      <label>Market ${opt('stat', ['all', ...stats], f.stat, v => v === 'all' ? 'all' : statName(v))}</label>
+      <label>Book ${opt('book', ['all', ...books], f.book)}</label>
+      <label><input type="checkbox" data-qf="matchup" ${f.matchup ? 'checked' : ''}> matchup not adverse</label>
+      <button class="small ${custom ? '' : 'primary'}" data-qf-reset>Strict (paper-traded)</button>
+      <span class="note"><strong>${n}</strong> bet${n === 1 ? '' : 's'} pass${custom ? ' · custom view (not logged)' : ' · engine defaults'}</span></div>`;
+  }
   function qualPanel(rows, withGame, title) {
-    const f = D.filter || {};
-    const intro = `<p class="note">Every one of these passed all six checks: simulated probability ≥ ${pct(f.prob || 0.65, 0)} over ${(f.n_sims || 10000).toLocaleString()} games · EV ≥ ${sg(100 * (f.min_ev || 0.03))}% at the best price · the player's real L10 hit rate on that exact line ≥ ${pct(f.hit_rate || 0.6, 0)} · worst-case scenario still ≥ ${pct(f.robust || 0.55, 0)} · matchup not adverse · availability verified (no injury flag, stable role, ${f.min_games || 8}+ games with the team) · edge plausible. One bet per player per game (a player's stats rise and fall together); the player page shows the rest. Ranked by probability, then EV.</p>`;
-    return `<section class="card"><h2>${esc(title)}</h2>${intro}${rows.length ? `<div class="table-wrap"><table>${QUAL_HEAD(withGame)}<tbody>${rows.map(q => qualRow(q, withGame)).join('')}</tbody></table></div>` : '<div class="nobets">NO QUALIFYING BETS</div><p class="note">Nothing on this slate passes every check. That is the filter working, not a bug: the high-probability lines are priced short, the priced-well lines are not high-probability enough, or availability is unverified.</p>'}</section>`;
+    const g0 = state.qf || QF_DEFAULT();
+    const intro = `<p class="note">Checks in force: simulated probability ≥ ${pct(g0.prob, 0)} over ${((D.filter || {}).n_sims || 10000).toLocaleString()} games · EV ${g0.ev < 0 ? 'any' : '≥ ' + sg(100 * g0.ev) + '%'} at the best price · L10 hit rate on that exact line ${g0.hit ? '≥ ' + pct(g0.hit, 0) : 'off'} · worst-case scenario ${g0.robust ? '≥ ' + pct(g0.robust, 0) : 'off'} · ${g0.matchup ? 'matchup not adverse · ' : ''}${QF_LABEL.flags[g0.flags]} · ${g0.games}+ games with the team · edge ≤ ${pct(g0.maxedge, 0)} over implied. One bet per player per game; the player page shows the rest. Ranked by probability, then EV.${state.qf ? ' <strong>This is your custom view; only the strict defaults are paper-traded on the Picks tab.</strong>' : ''}</p>`;
+    return `<section class="card"><h2>${esc(title)}</h2>${qualFilterBar(g0, rows.length)}${intro}${rows.length ? `<div class="table-wrap"><table>${QUAL_HEAD(withGame)}<tbody>${rows.map(q => qualRow(q, withGame)).join('')}</tbody></table></div>` : '<div class="nobets">NO QUALIFYING BETS</div><p class="note">Nothing on this slate passes every check. That is the filter working, not a bug: the high-probability lines are priced short, the priced-well lines are not high-probability enough, or availability is unverified.</p>'}</section>`;
   }
 
   // ---------- props flow: matches -> match -> players -> previous numbers -> floor + odds ----------
@@ -591,7 +639,7 @@ tr.dim td { color: var(--muted); }
   function propsMatches() {
     const games = dayGames();
     const hasProps = games.filter(g => g.props.length), noProps = games.filter(g => !g.props.length);
-    const quals = (D.qualifying || []).filter(q => !state.day || q.date_et === state.day);
+    const quals = state.qf ? computeQualifying(games, state.qf) : (D.qualifying || []).filter(q => !state.day || q.date_et === state.day);
     const cards = hasProps.map(g => {
       const sug = suggestions(g), safe = sug.filter(x => x.tags.includes('safe') && x.r.p_over >= 0.7), val = sug.filter(x => x.tags.includes('value') && x.r.edge_over >= D.config.edge_threshold);
       const inj = g.injuries.filter(i => (i.status || '').toLowerCase() === 'out').length;
@@ -642,7 +690,7 @@ tr.dim td { color: var(--muted); }
       <div class="eyebrow" style="margin-top:8px">${score(g)}</div><h1>${esc(g.away_name)} @ ${esc(g.home_name)}</h1>
       <p class="sub">Model: ${G.home} win ${pct(g.pred.p_home_win, 0)} · expected ${G.home} ${f1(g.pred.exp_home_pts)} – ${G.away} ${f1(g.pred.exp_away_pts)}${g.pred.pace != null ? ' · pace ' + f1(g.pred.pace) : ''}${g.pred.notes.length ? ' · ' + esc(g.pred.notes.join('; ')) : ''}. <button class="back" data-game="${G.game_id}">Full game breakdown</button></p></div>
       ${warn.length ? `<p class="warn">Not suggested until you check the news: ${esc(warn.join(' · '))}. "Market doubt" means a liquid line is priced far below our number, which usually means a late scratch or a minutes limit the stats don't know about.</p>` : ''}
-      ${D.qualifying ? qualPanel((D.qualifying || []).filter(q => q.game_id === G.game_id), false, 'Qualifying bets in this game') : ''}
+      ${D.qualifying ? qualPanel(state.qf ? computeQualifying([g], state.qf) : (D.qualifying || []).filter(q => q.game_id === G.game_id), false, 'Qualifying bets in this game') : ''}
       <section class="card"><h2>Safest floors in this game</h2>${safe.length ? `<div class="table-wrap"><table>${SUGG_HEAD(false)}<tbody>${safe.map(x => suggRow(Object.assign({ gm: g }, x), false)).join('')}</tbody></table></div>` : '<div class="empty">No liquid floor clears 65% yet.</div>'}</section>
       <section class="card"><h2>Value lines in this game</h2>${val.length ? `<div class="table-wrap"><table>${SUGG_HEAD(false)}<tbody>${val.map(x => suggRow(Object.assign({ gm: g }, x), false)).join('')}</tbody></table></div>` : '<div class="empty">No positive-edge value line.</div>'}</section>
       ${teamBlock(G.home)}${teamBlock(G.away)}`;
@@ -937,6 +985,7 @@ tr.dim td { color: var(--muted); }
     const tk = e.target.closest('[data-track]'); if (tk) { const bet = JSON.parse(tk.dataset.track); const inp = tk.parentElement.querySelector('input[type=number]'); const stake = Math.max(1, Number(inp && inp.value) || 10); const rows = loadTracker(); if (rows.some(r => r.key === bet.key)) { tk.textContent = 'Already tracked'; return; } rows.push(Object.assign(bet, { stake, recorded_at: new Date().toISOString(), result: null, pnl: null })); saveTracker(rows); tk.textContent = 'Tracked ✓'; return; }
     const td = e.target.closest('[data-tdel]'); if (td) { saveTracker(loadTracker().filter(r => r.key !== td.dataset.tdel)); render(); return; }
     const tx = e.target.closest('[data-texport]'); if (tx) { const blob = new Blob([JSON.stringify(loadTracker(), null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'bet-tracker.json'; a.click(); return; }
+    const qr = e.target.closest('[data-qf-reset]'); if (qr) { state.qf = null; render(); return; }
     const sb = e.target.closest('[data-strategy]'); if (sb) { state.strategy = sb.dataset.strategy; render(); return; }
     const ms = e.target.closest('[data-msec]'); if (ms) { state.msec = ms.dataset.msec; render(); return; }
     const mo = e.target.closest('[data-mopen]'); if (mo && !e.target.closest('button,select,input,a')) { state.mopen = state.mopen === mo.dataset.mopen ? null : mo.dataset.mopen; render(); return; }
@@ -945,6 +994,7 @@ tr.dim td { color: var(--muted); }
   });
   document.addEventListener('keydown', e => { if (e.key === 'Enter') { const t = e.target.closest('[data-game],[data-player],[data-pgame],[data-pplayer]'); if (t) t.click(); } });
   document.addEventListener('change', e => { if (e.target.id === 'teamsel') { state.team = e.target.value; state.player = null; render(); }
+    const qf = e.target.closest('[data-qf]'); if (qf) { const f = state.qf || QF_DEFAULT(); const v = qf.type === 'checkbox' ? qf.checked : qf.value; f[qf.dataset.qf] = (typeof v === 'string' && !isNaN(Number(v)) && !['side', 'stat', 'book', 'flags'].includes(qf.dataset.qf)) ? Number(v) : v; state.qf = f; render(); return; }
     const vf = e.target.closest('[data-vf]'); if (vf) { const v = vf.value; state.vfilter[vf.dataset.vf] = isNaN(Number(v)) || v === 'all' ? v : Number(v); render(); return; }
     const tr = e.target.closest('[data-tres]'); if (tr) { const rows = loadTracker(); const r = rows.find(x => x.key === tr.dataset.tres); if (r) { r.result = tr.value || null; r.pnl = !r.result ? null : r.result === 'win' ? +(r.stake * (r.price - 1)).toFixed(2) : r.result === 'loss' ? -r.stake : 0; r.graded_at = r.result ? new Date().toISOString() : null; saveTracker(rows); } render(); return; }
     const ti = e.target.closest('[data-timport]'); if (ti && ti.files[0]) { const fr = new FileReader(); fr.onload = () => { try { const inc = JSON.parse(fr.result); if (Array.isArray(inc)) { const rows = loadTracker(); const keys = new Set(rows.map(r => r.key)); inc.forEach(r => { if (r && r.key && !keys.has(r.key)) rows.push(r); }); saveTracker(rows); render(); } } catch (err) { ti.insertAdjacentHTML('afterend', '<span class="note"> not a tracker export</span>'); } }; fr.readAsText(ti.files[0]); return; } });

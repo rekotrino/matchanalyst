@@ -215,8 +215,15 @@ class Store:
 
     # -- recommendation log shared by the three systems ---------------------
     def add_recs(self, system, game, rows):
+        """One paper bet per player per game per system: the first time a player is
+        recommended his line and price are locked; later runs that move the line or
+        switch the stat do not add a second exposure."""
         ts = now_iso()
+        have = {r[0].lower() for r in self.conn.execute("SELECT player FROM recs WHERE system=? AND game_id=?", (system, game["game_id"]))}
         for q in rows:
+            if q["player"].lower() in have:
+                continue
+            have.add(q["player"].lower())
             self.conn.execute(
                 """INSERT OR IGNORE INTO recs (system,game_id,date_et,tip_utc,player,team,opp,stat,side,line,price,book,prob,ev,implied,meta,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
