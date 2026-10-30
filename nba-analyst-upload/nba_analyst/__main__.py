@@ -132,6 +132,27 @@ def cmd_export_site(args):
         print(f"[site] {path} + data.json  ({', '.join(data)})  - the page reloads data.json every 3 minutes")
 
 
+def cmd_backtest(args):
+    from . import backtest
+    store = _store(args.db)
+    recs = backtest.run(store, n_sims=args.sims, min_history=args.min_history, hit_weight=args.hit_weight)
+    res = backtest.evaluate(recs)
+    if not res.get("n"):
+        print("[backtest] nothing to evaluate (need completed regular-season games with player box scores)")
+        return
+    os.makedirs(args.reports or "reports", exist_ok=True)
+    path = backtest.report_md(res, os.path.join(args.reports or "reports", "backtest.md"))
+    b, s_ = res["p_blend"], res["p_sim"]
+    print(f"[backtest] n={res['n']}  Brier sim {s_['brier']:.4f} | blend {b['brier']:.4f} | recalibrated {res['p_calibrated']['brier']:.4f}")
+    for side, sel in b["selections"].items():
+        if sel["n"]:
+            print(f"  {side}: n={sel['n']} hit {sel['hit_rate']:.3f} (pred {sel['avg_pred']:.3f}) ROI@-110 {sel['roi_at_-110']:+.3f}")
+    print(f"  Platt a={res['platt']['a']:+.3f} b={res['platt']['b']:.3f}; minutes MAE {res['minutes']['mae']:.2f}")
+    print(f"[backtest] report: {path}")
+    if not args.no_write:
+        print(f"[backtest] calibration written: {backtest.write_calibration(res)}")
+
+
 def cmd_demo(args):
     from .demo import seed_demo
     db = args.db or "data/demo.sqlite"
@@ -182,6 +203,12 @@ def main(argv=None):
     s.add_argument("--days", type=int, default=None)
     s.add_argument("--embed", action="store_true", help="single index.html with data embedded (no data.json)")
     s.set_defaults(fn=cmd_export_site)
+    s = sub.add_parser("backtest", help="walk-forward check of the prop simulator; fits data/calibration.json")
+    s.add_argument("--sims", type=int, default=3000)
+    s.add_argument("--min-history", type=int, default=8)
+    s.add_argument("--hit-weight", type=float, default=None)
+    s.add_argument("--no-write", action="store_true", help="report only, do not write calibration.json")
+    s.set_defaults(fn=cmd_backtest)
     sub.add_parser("demo").set_defaults(fn=cmd_demo)
     args = ap.parse_args(argv)
     args.fn(args)

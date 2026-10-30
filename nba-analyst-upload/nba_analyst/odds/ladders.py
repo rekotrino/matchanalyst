@@ -28,6 +28,71 @@ def _name_resolver(fns):
     return resolve
 
 
+def _cfg(cfg, key, default):
+    return getattr(cfg, key, default)
+
+
+def _tier(p, ev, cfg):
+    """high-prob + value is the preferred class; the others are informational."""
+    hp = p >= _cfg(cfg, "qualify_prob", 0.65)
+    pv = ev is not None and ev > 0
+    if hp and pv:
+        return "both"
+    if hp:
+        return "high-prob"
+    if pv and p >= cfg.prob_floor:
+        return "value"
+    return None
+
+
+def _focus_line(ladder):
+    real = [x for x in ladder if x["real"]]
+    pool = real or ladder
+    return min(pool, key=lambda x: abs(x["p_over"] - 0.5))["line"]
+
+
+def _qualify(e, ladder, flags, cfg):
+    """Strict filter: every indicator must pass for one rung (over or under).
+    Returns the best qualifying rung with its evidence, or None."""
+    if flags or not e.get("robust_fn"):         # availability / role / sample / market doubt; or no simulator (NHL)
+        return None
+    if (e.get("n") or 0) < _cfg(cfg, "qualify_min_games", 8):
+        return None
+    best = None
+    for x in ladder:
+        if not x["real"]:
+            continue
+        for side in ("over", "under"):
+            p = x["p_over"] if side == "over" else 1 - x["p_over"]
+            ev = x["ev_over"] if side == "over" else x["ev_under"]
+            price = x["over_price"] if side == "over" else x["under_price"]
+            if price is None or ev is None:
+                continue
+            hr = x["hit10"] if side == "over" else (None if x["hit10"] is None else 1 - x["hit10"])
+            rob = x["robust_over"] if side == "over" else x["robust_under"]
+            mf = e.get("matchup", 1.0)
+            imp = x["implied_over"] if side == "over" else x["implied_under"]
+            checks = {
+                "simulated probability": p >= _cfg(cfg, "qualify_prob", 0.65),
+                "edge plausible": imp is None or (p - imp) <= _cfg(cfg, "qualify_max_edge", 0.25),
+                "positive EV": ev >= _cfg(cfg, "qualify_min_ev", 0.03),
+                "last-10 hit rate": hr is not None and (x["hit_n"] or 0) >= 8 and hr >= _cfg(cfg, "qualify_hit_rate", 0.6),
+                "robust across scenarios": rob is not None and rob >= _cfg(cfg, "qualify_robust", 0.55),
+                "matchup not adverse": (mf >= 0.97) if side == "over" else (mf <= 1.03),
+                "availability verified": True,
+            }
+            if all(checks.values()):
+                cand = {"line": x["line"], "side": side, "p": round(p, 3), "ev": ev, "price": price,
+                        "book": x["best_over_book"] if side == "over" else x["best_under_book"],
+                        "implied": x["implied_over"] if side == "over" else x["implied_under"],
+                        "edge": None if (x["implied_over"] if side == "over" else x["implied_under"]) is None else
+                                round(p - (x["implied_over"] if side == "over" else x["implied_under"]), 3),
+                        "robust": rob, "hit10": hr, "checks": checks}
+                if best is None or (cand["p"], cand["ev"]) > (best["p"], best["ev"]):
+                    best = cand
+    return best
+
+
 def build_prop_items(game, fns, quotes, standard_lines, cfg, stat_label, dtd_names, flags_for=None):
     """fns: {(player_lower, stat): {p_fn, player_id, player, team, opp, position, proj{mean,sd,minutes}, recent[],
     l10, l5, season, l10_sd, hit_fn(line, n)->(rate, n), extra...}}.
@@ -44,8 +109,10 @@ def build_prop_items(game, fns, quotes, standard_lines, cfg, stat_label, dtd_nam
     lines_for = defaultdict(set)
     for (pl, stat, line) in qmap:
         lines_for[(pl, stat)].add(line)
-    for (pl, stat) in fns:
+    for (pl, stat), e in fns.items():
         for line in (standard_lines or {}).get(stat) or []:
+            lines_for[(pl, stat)].add(line)
+        for line in e.get("alt_lines") or []:
             lines_for[(pl, stat)].add(line)
 
     out = []
@@ -70,11 +137,30 @@ def build_prop_items(game, fns, quotes, standard_lines, cfg, stat_label, dtd_nam
             has_market = bool(qs) and (bo is not None or bu is not None)
             # a Polymarket-only quote with thin liquidity is not a real market
             real = has_market and any(q.book != "polymarket" or (q.liquidity or 0) >= cfg.min_liquidity for q in qs)
+            p_u = 1 - p
+            # implied probability with the bookmaker margin removed when both sides are quoted at one book
+            imp_o = imp_u = None
+            for b, sides in books.items():
+                if "over" in sides and "under" in sides:
+                    io, iu = 1 / sides["over"], 1 / sides["under"]
+                    imp_o, imp_u = io / (io + iu), iu / (io + iu)
+                    break
+            if imp_o is None and bo is not None:
+                imp_o = 1 / bo.price
+            if imp_u is None and bu is not None:
+                imp_u = 1 / bu.price
+            ev_o = None if bo is None else round(p * bo.price - 1, 3)
+            ev_u = None if bu is None else round(p_u * bu.price - 1, 3)
+            rob_o = e["robust_fn"](line, "over") if e.get("robust_fn") else None
+            rob_u = e["robust_fn"](line, "under") if e.get("robust_fn") else None
             ladder.append({
-                "market_id": None, "line": line, "p_over": round(p, 3), "p_model": None,
+                "line": line, "p_over": round(p, 3),
+                "implied_over": None if imp_o is None else round(imp_o, 3), "implied_under": None if imp_u is None else round(imp_u, 3),
+                "ev_over": ev_o, "ev_under": ev_u,
+                "robust_over": None if rob_o is None else round(rob_o, 3), "robust_under": None if rob_u is None else round(rob_u, 3),
+                "tier_over": _tier(p, ev_o, cfg), "tier_under": _tier(p_u, ev_u, cfg),
                 "hit10": None if hr10 is None else round(hr10, 2), "hit5": None if hr5 is None else round(hr5, 2),
                 "hit_season": None if hrs is None else round(hrs, 2), "hit_n": hn, "hit_season_n": ns,
-                "yes": None if bo is None else round(1 / bo.price, 3), "no": None if bu is None else round(1 / bu.price, 3),
                 "yes_buy": None if bo is None else round(1 / bo.price, 3), "no_buy": None if bu is None else round(1 / bu.price, 3),
                 "best_over_book": bo.book if bo else None, "best_under_book": bu.book if bu else None,
                 "over_price": None if bo is None else round(bo.price, 3), "under_price": None if bu is None else round(bu.price, 3),
@@ -97,6 +183,7 @@ def build_prop_items(game, fns, quotes, standard_lines, cfg, stat_label, dtd_nam
         vals = e.get("recent") or []
         proj = e["proj"]
         books_seen = sorted({b for x in ladder for b in x["books"]})
+        qual = _qualify(e, ladder, flags, cfg)
         out.append({
             "player_id": e["player_id"], "player": e["player"], "team": e["team"], "opp": e["opp"], "position": e.get("position"),
             "stat": stat, "stat_label": stat_label(stat), "proj": round(proj["mean"], 2), "proj_raw": round(e.get("proj_raw", proj["mean"]), 2),
@@ -106,6 +193,11 @@ def build_prop_items(game, fns, quotes, standard_lines, cfg, stat_label, dtd_nam
             "pace_factor": e.get("pace_factor", 1.0), "bump": e.get("bump", 0), "rate60": e.get("rate60"), "starter_note": e.get("starter_note"),
             "ladder": ladder, "floor_line": ladder[0]["line"], "floor_liquid": (pool[0]["line"] if pool else None),
             "flags": flags, "liquid": bool(pool), "fair_only": not any(x["has_market"] for x in ladder), "books": books_seen,
+            "sim": e.get("sim"), "n_games": e.get("n"), "l20_avg": e.get("l20"), "splits": e.get("splits"),
+            "consistency": e.get("consistency"), "h2h": e.get("h2h"), "min_sd": e.get("min_sd"), "p_blowout": e.get("p_blowout"),
+            "b2b": e.get("b2b"), "usage": e.get("usage"), "ts_pct": e.get("ts_pct"),
+            "qualifying": qual, "scenarios": (e["scenario_fn"](qual["line"]) if qual and e.get("scenario_fn") else
+                                              (e["scenario_fn"](_focus_line(ladder)) if e.get("scenario_fn") and ladder else None)),
             "safe_pick": max(safe, key=lambda x: (x["p_over"], x["edge_over"] or 0)) if safe else None,
             "value_pick": max(value, key=lambda x: x["edge_over"]) if value else None,
             "under_pick": max(under, key=lambda x: (1 - x["p_over"], x["edge_under"])) if under else None,

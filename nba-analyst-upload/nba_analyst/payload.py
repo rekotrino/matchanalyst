@@ -9,7 +9,7 @@ from .analyst import players as pl
 from .config import SETTINGS
 from .ingest.espn import ET, TEAM_NAMES
 from .model.game_model import fair_markets
-from .pipeline import analyze_game, build_context, performance
+from .pipeline import analyze_game, build_context, performance, qualifying_performance
 from .scanner import select_daily
 from .storage import Store
 
@@ -40,8 +40,9 @@ def _player(p):
 def _market(m):
     mk = m["market"]
     rows = None
+    keep = ("outcome", "our_prob", "buy_price", "edge", "proj", "proj_sd", "proj_min", "hit_rate", "player", "stat", "line")
     if m["rows"]:
-        rows = [{k: (_num(v) if isinstance(v, float) else v) for k, v in r.items()} for r in m["rows"]]
+        rows = [{k: (_num(v) if isinstance(v, float) else v) for k, v in r.items() if k in keep} for r in m["rows"]]
     return {"market_id": mk["market_id"], "question": mk.get("question"), "type": mk["market_type"],
             "line": mk.get("line"), "liquidity": _num(mk.get("liquidity"), 1), "bid_ask": mk.get("bid_ask"),
             "outcomes": mk["outcomes"], "prices": mk["prices"], "rows": rows}
@@ -112,17 +113,57 @@ def prop_board(r, cfg=SETTINGS.betting):
     return out
 
 
+def _round(o, nd=3):
+    """Round every float and drop null fields in a nested structure (keeps data.json small;
+    the page treats a missing field like a null one)."""
+    if isinstance(o, float):
+        return round(o, nd)
+    if isinstance(o, dict):
+        return {k: _round(v, nd) for k, v in o.items() if v is not None}
+    if isinstance(o, list):
+        return [_round(v, nd) for v in o]
+    return o
+
+
 def build_payload(store: Store, days_ahead=None):
     ctx = build_context(store)
     today = datetime.now(ET).date()
     end = today + timedelta(days=days_ahead if days_ahead is not None else SETTINGS.lookahead_days)
-    upcoming = store.games_upcoming(str(today), str(end))
+    start = today - timedelta(days=1)
+    upcoming = store.games_between(str(start), str(end))
     results = [analyze_game(store, g, ctx, record=False) for g in upcoming]
-    chosen = {p["market_id"] for p in select_daily([p for r in results for p in r["picks"]])}
+    chosen = {p["market_id"] for p in select_daily([p for r in results for p in r["picks"] if not r["game"].get("completed")])}
+    qlog = {(q["game_id"], q["player"].lower(), q["stat"], q["line"], q["side"]): q for q in store.qualifying_history()}
 
-    games = []
+    games, qualifying = [], []
     for r in results:
         g, pred = r["game"], r["pred"]
+        actual = {}
+        if g.get("completed"):
+            for row in store.game_player_stats(g["game_id"]):
+                row["pra"] = (row["pts"] or 0) + (row["reb"] or 0) + (row["ast"] or 0)
+                row["pr"] = (row["pts"] or 0) + (row["reb"] or 0)
+                row["pa"] = (row["pts"] or 0) + (row["ast"] or 0)
+                row["ra"] = (row["reb"] or 0) + (row["ast"] or 0)
+                actual[row["player_id"]] = row
+        for item in r["prop_items"]:
+            a = actual.get(item["player_id"])
+            if a is not None:
+                item["actual"] = None if (a.get("dnp") or not a.get("min")) else a.get(item["stat"])
+            q = item.get("qualifying")
+            if q:
+                logged = qlog.get((g["game_id"], item["player"].lower(), item["stat"], q["line"], q["side"]))
+                if item.get("actual") is not None:
+                    q["actual"] = item["actual"]
+                    q["result"] = "push" if item["actual"] == q["line"] else (
+                        "win" if ((item["actual"] > q["line"]) == (q["side"] == "over")) else "loss")
+                elif a is not None:
+                    q["result"] = "void"
+                q["logged_at"] = logged["created_at"] if logged else None
+                qualifying.append({**q, "game_id": g["game_id"], "date_et": g["date_et"], "completed": bool(g.get("completed")),
+                                   "player": item["player"], "team": item["team"], "opp": item["opp"], "stat": item["stat"],
+                                   "stat_label": item["stat_label"], "sim": item.get("sim"), "proj_min": item.get("proj_min"),
+                                   "l10_avg": item.get("l10_avg"), "recent": item.get("recent"), "matchup": item.get("matchup")})
         games.append({
             "game": g, "home_name": TEAM_NAMES.get(g["home"], g["home"]), "away_name": TEAM_NAMES.get(g["away"], g["away"]),
             "pred": {k: (_num(v) if isinstance(v, float) else v) for k, v in pred.items() if k != "model_only"},
@@ -133,7 +174,7 @@ def build_payload(store: Store, days_ahead=None):
             "injuries": r["injuries"], "rotations": {t: [_player(p) for p in ps] for t, ps in r["rotations"].items()},
             "fair": [{"type": f["type"], "label": f["label"], "p": _num(f["p"])} for f in fair_markets(pred, g["home"], g["away"])],
             "markets": [_market(m) for m in r["markets"]],
-            "props": r["prop_items"], "lines": r["lines_table"], "books": r["books"],
+            "props": _round(r["prop_items"]), "lines": r["lines_table"], "books": r["books"],
             "dvp": r.get("dvp"), "dvp_league": r.get("dvp_league"), "dvp_games": r.get("dvp_games"),
             "picks": [{k: (_num(v) if isinstance(v, float) else v) for k, v in p.items()}
                       for p in r["picks"] if p["market_id"] in chosen],
@@ -157,6 +198,11 @@ def build_payload(store: Store, days_ahead=None):
                    "anchor_cap": m.anchor_cap, "anchor_games": m.anchor_games, "margin_sd": m.margin_sd, "total_sd": m.total_sd},
         "league": {k: _num(v) for k, v in ctx["lg"].items()},
         "games": games, "teams": teams, "team_names": TEAM_NAMES,
+        "days": sorted({x["game"]["date_et"] for x in games}), "today_et": str(today),
+        "qualifying": sorted(qualifying, key=lambda q: (q["completed"], -q["p"], -(q["ev"] or 0))),
+        "qualifying_perf": qualifying_performance(store),
+        "filter": {"prob": b.qualify_prob, "min_ev": b.qualify_min_ev, "min_games": b.qualify_min_games,
+                   "hit_rate": b.qualify_hit_rate, "robust": b.qualify_robust, "n_sims": b.n_sims},
         "picks_history": hist, "perf": {k: (_num(v) if isinstance(v, float) else v) for k, v in perf.items()},
     }
 

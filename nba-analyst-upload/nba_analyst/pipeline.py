@@ -5,7 +5,12 @@ import os
 import time
 from datetime import date, datetime, timedelta
 
+import math
+
+import numpy as np
+
 from .analyst import players as pl
+from .analyst import sim
 from .analyst.ratings import (build_game_lines, flag_issues, league_averages, rest_info,
                               strength_ratings, team_profile)
 from .config import SETTINGS
@@ -199,6 +204,8 @@ def analyze(store: Store, days_ahead=None, log=print):
     results, day_picks = [], []
     for g in upcoming:
         res = analyze_game(store, g, ctx)
+        store.add_qualifying(g, [dict(i["qualifying"], player=i["player"], team=i["team"], opp=i["opp"], stat=i["stat"])
+                                 for i in res["prop_items"] if i.get("qualifying")])
         for p in res["picks"]:
             if p["market_id"] not in existing:
                 store.add_pick(dict(p, mode="paper"))
@@ -244,9 +251,12 @@ def analyze_game(store: Store, g, ctx, record=True):
     priced, _pm_picks = scan_game(g, pred, markets, player_ctx=player_ctx)
     # ---- every book on one footing -------------------------------------------------
     quotes = polymarket_quotes(g, markets, NICK_TO_ESPN, PROP_TYPES) + store.latest_quotes(g["game_id"])
-    fns = prop_fns(g, ctx, rotations, out_names, player_ctx)
     dtd = {i["player"].lower() for i in injuries if (i.get("status") or "").lower() not in ("out", "")}
-    prop_items = build_prop_items(g, fns, quotes, {}, SETTINGS.betting, lambda st: STAT_LABEL.get(st, st), dtd)
+    dtd_names = {t: [i["player"] for i in injuries if i["team"] == t and (i.get("status") or "").lower() not in ("out", "")] for t in (home, away)}
+    fns = prop_fns(g, ctx, rotations, out_names, player_ctx, pred=pred, rest={home: rest_h, away: rest_a}, dtd_names=dtd_names,
+                   as_of=(g["date_et"] if g.get("completed") else None))
+    prop_items = build_prop_items(g, fns, quotes, {}, SETTINGS.betting, lambda st: STAT_LABEL.get(st, st), dtd,
+                                  flags_for=lambda e: e.get("flags", []))
     def prob_for(q):
         if q.market == "moneyline":
             return pred["p_home_win"] if q.side == home else (1 - pred["p_home_win"] if q.side == away else None)
@@ -278,7 +288,43 @@ def analyze_game(store: Store, g, ctx, record=True):
 # grade
 # ---------------------------------------------------------------------------
 
+def grade_qualifying(store: Store, log=print):
+    """Fill in the actual stat and win/loss/push for logged qualifying bets."""
+    n = 0
+    for q in store.ungraded_qualifying():
+        rows = [r for r in store.game_player_stats(q["game_id"]) if r["player"].lower() == q["player"].lower()]
+        if not rows:
+            continue
+        r = rows[0]
+        if r.get("dnp") or not r.get("min"):
+            store.grade_qualifying(q["game_id"], q["player"], q["stat"], q["line"], q["side"], None, "void")
+            n += 1
+            continue
+        val = {"pra": (r["pts"] or 0) + (r["reb"] or 0) + (r["ast"] or 0), "pr": (r["pts"] or 0) + (r["reb"] or 0),
+               "pa": (r["pts"] or 0) + (r["ast"] or 0), "ra": (r["reb"] or 0) + (r["ast"] or 0)}.get(q["stat"], r.get(q["stat"]) or 0)
+        if val == q["line"]:
+            res = "push"
+        else:
+            res = "win" if ((val > q["line"]) == (q["side"] == "over")) else "loss"
+        store.grade_qualifying(q["game_id"], q["player"], q["stat"], q["line"], q["side"], val, res)
+        n += 1
+    store.commit()
+    if n:
+        log(f"[grade] graded {n} qualifying bets")
+
+
+def qualifying_performance(store: Store):
+    hist = [q for q in store.qualifying_history() if q["result"] in ("win", "loss")]
+    if not hist:
+        return {"n": 0}
+    wins = sum(1 for q in hist if q["result"] == "win")
+    pnl = sum(((q["price"] or 1) - 1) if q["result"] == "win" else -1 for q in hist)
+    return {"n": len(hist), "wins": wins, "hit_rate": wins / len(hist), "roi": pnl / len(hist),
+            "avg_prob": sum(q["prob"] for q in hist) / len(hist)}
+
+
 def grade(store: Store, log=print):
+    grade_qualifying(store, log)
     graded = 0
     for p in store.open_picks():
         if not p["completed"] or p["home_score"] is None:
@@ -353,43 +399,105 @@ def _resolve_player(fns, name, stat):
     return c[0] if len(c) == 1 else None
 
 
-def prop_fns(g, ctx, rotations, out_names, player_ctx):
+def calibrate(p, cfg=None):
+    """Platt scaling learned by `backtest`; identity until fitted."""
+    cfg = cfg or SETTINGS.betting
+    if cfg.calibration_a == 0.0 and cfg.calibration_b == 1.0:
+        return p
+    p = min(max(p, 1e-6), 1 - 1e-6)
+    z = cfg.calibration_a + cfg.calibration_b * math.log(p / (1 - p))
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def prop_fns(g, ctx, rotations, out_names, player_ctx, pred=None, rest=None, dtd_names=None, as_of=None):
+    """Per player x stat: simulated distribution, scenario table, indicators and
+    the probability functions the ladder builder calls. as_of: only games before
+    this ET date are used (backtests and finished games)."""
     home, away = g["home"], g["away"]
     cfg = SETTINGS.betting
+    dtd_names = dtd_names or {}
     out = {}
+    p_blow = sim.blowout_probability(pred, SETTINGS.model.margin_sd) if pred else 0.12
     for team in (home, away):
         opp = away if team == home else home
         outs = {n.lower() for n in out_names.get(team, [])}
         profs = rotations[team]
+        b2b = bool((rest or {}).get(team, {}).get("b2b"))
         for prof in profs:
             if prof["player"].lower() in outs:
                 continue
-            games = [x for x in ctx["by_player"].get(prof["player_id"], []) if x["team"] == team]
+            allg = ctx["by_player"].get(prof["player_id"], [])
+            if as_of:
+                allg = [x for x in allg if x["date_et"] < as_of]
+            games = [x for x in allg if x["team"] == team]
             if len(games) < cfg.prop_min_games:
                 continue
+            season_start = f"{ctx['season'] - 1}-09-01"
+            cur = [x for x in games if x["date_et"] >= season_start] or games
+            prior = [x for x in allg if x["date_et"] < season_start]
             bump = pl.usage_bump_for(profs, out_names.get(team, []), prof["player"]) or 0.0
-            for stat in ("pts", "reb", "ast", "tpm", "stl", "blk", "pra", "pr", "pa", "ra"):
-                proj = pl.projection(games, stat, minutes_bump=bump)
-                if not proj or proj.get("preseason_only"):
-                    continue
-                mf, minfo = pl.matchup_factor(player_ctx.get("dvp"), opp, prof.get("position"), stat)
-                pf = pl.pace_factor(player_ctx.get("pace"), player_ctx.get("lg_pace"))
-                adj = dict(proj, mean=proj["mean"] * mf * pf)
+            dtd_team = [n for n in dtd_names.get(team, []) if n.lower() != prof["player"].lower()]
+            bump_if_dtd_out = (pl.usage_bump_for(profs, list(out_names.get(team, [])) + dtd_team, prof["player"]) or 0.0) - bump
+            params = sim.player_params(cur, prior_games=prior, minutes_bump=bump)
+            if not params or params["preseason_only"]:
+                continue
+            pf = pl.pace_factor(player_ctx.get("pace"), player_ctx.get("lg_pace"))
+            mfs, minfo = {}, {}
+            for st in ("pts", "reb", "ast", "tpm", "stl", "blk"):
+                mfs[st], minfo[st] = pl.matchup_factor(player_ctx.get("dvp"), opp, prof.get("position"), st)
+            seed = abs(hash((g["game_id"], prof["player_id"]))) % (2 ** 32)
+            base = sim.simulate(params, cfg.n_sims, mfs, pf, p_blow, b2b, seed=seed)
+            scen = {}
+            for name in ("more_minutes", "fewer_minutes", "blowout", "tough_matchup", "favorable_matchup"):
+                scen[name] = sim.simulate(params, cfg.n_sims_scenario, mfs, pf, p_blow, b2b, scenario=name, seed=seed + 1)
+            if bump_if_dtd_out > 0.5:
+                p2 = sim.player_params(cur, prior_games=prior, minutes_bump=bump + bump_if_dtd_out)
+                scen["teammate_out"] = sim.simulate(p2, cfg.n_sims_scenario, mfs, pf, p_blow, b2b, seed=seed + 2)
+            flags = []
+            if params["min_sd"] > cfg.qualify_min_sd:
+                flags.append("unpredictable minutes")
+            if 0.2 < params["starter_rate"] < 0.8:
+                flags.append("role in flux")
+            if len(cur) < cfg.qualify_min_games:
+                flags.append("small sample")
+            for stat in ("pts", "reb", "ast", "tpm", "stl", "blk", "tov", "pra", "pr", "pa", "ra"):
+                samples = base[stat]
+                summ = sim.summarize(samples)
 
-                def p_fn(line, gm=games, st=stat, pj=adj):
-                    pm = pl.p_over(pj, line)
+                def p_fn(line, smp=samples, gm=games, st=stat):
+                    ps = calibrate(sim.p_over(smp, line))
                     hr, hn = pl.hit_rate(gm, st, line, 10)
-                    w = 0.65 if hn >= 8 else (0.8 if hn >= 5 else 1.0)
-                    return w * pm + (1 - w) * hr if hr is not None else pm
+                    w = cfg.hit_rate_weight if hn >= 8 else (cfg.hit_rate_weight / 2 if hn >= 5 else 0.0)
+                    return (1 - w) * ps + w * hr if hr is not None else ps
 
                 def hit_fn(line, n, gm=games, st=stat):
                     return pl.hit_rate(gm, st, line, n)
+
+                def robust_fn(line, side, sc=scen, st=stat):
+                    """Worst-case probability for that side across stress scenarios."""
+                    vals = [(sim.p_over(s[st], line) if side == "over" else sim.p_under(s[st], line)) for s in sc.values()]
+                    return min(vals) if vals else None
+
+                def scenario_fn(line, sc=scen, st=stat, b=samples):
+                    rows = [{"scenario": "base", "median": round(float(np.median(b)), 1), "p_over": round(sim.p_over(b, line), 3)}]
+                    for name, s in sc.items():
+                        rows.append({"scenario": name, "median": round(float(np.median(s[st])), 1), "p_over": round(sim.p_over(s[st], line), 3)})
+                    return rows
                 recent = [x.get(stat) or 0 for x in prof["recent"]]
+                h2h = pl.vs_opponent(allg, opp, stat)
+                mf = mfs.get("pts" if stat in ("pra", "pr", "pa", "tov") else ("reb" if stat == "ra" else stat), 1.0)
                 out[(prof["player"].lower(), stat)] = {
-                    "p_fn": p_fn, "hit_fn": hit_fn, "player_id": prof["player_id"], "player": prof["player"], "team": team, "opp": opp,
-                    "position": prof.get("position"), "proj": adj, "proj_raw": proj["mean"], "recent": recent,
-                    "l10": prof["last10"].get(stat), "l5": prof["last5"].get(stat), "season": prof["season"].get(stat),
-                    "l10_sd": prof["last10"].get(stat + "_sd"), "matchup": mf, "matchup_info": minfo, "pace_factor": pf, "bump": bump,
-                    "p10": round(max(0.0, adj["mean"] - 1.28 * adj["sd"]), 1),
+                    "p_fn": p_fn, "hit_fn": hit_fn, "robust_fn": robust_fn, "scenario_fn": scenario_fn, "samples": samples,
+                    "alt_lines": sim.standard_lines(samples, stat),
+                    "player_id": prof["player_id"], "player": prof["player"], "team": team, "opp": opp,
+                    "position": prof.get("position"), "proj": {"mean": summ["mean"], "sd": summ["sd"], "minutes": params["proj_min"]},
+                    "proj_raw": summ["mean"], "sim": summ, "recent": recent, "n": len(cur), "flags": flags,
+                    "l10": prof["last10"].get(stat), "l5": prof["last5"].get(stat), "l20": prof.get("last20", {}).get(stat),
+                    "season": prof["season"].get(stat), "l10_sd": prof["last10"].get(stat + "_sd"),
+                    "splits": {k: v.get(stat) for k, v in prof.get("splits", {}).items()} | {"home_n": prof["splits"]["home"]["n"], "away_n": prof["splits"]["away"]["n"]} if prof.get("splits") else None,
+                    "consistency": (prof.get("consistency") or {}).get(stat), "h2h": h2h,
+                    "matchup": mf, "matchup_info": minfo.get(stat if stat in minfo else "pts"), "pace_factor": pf, "bump": bump,
+                    "p10": summ["p10"], "min_sd": round(params["min_sd"], 1), "p_blowout": round(p_blow, 3), "b2b": b2b,
+                    "usage": prof["last10"].get("usage_proxy"), "ts_pct": prof["last10"].get("ts_pct"),
                 }
     return out

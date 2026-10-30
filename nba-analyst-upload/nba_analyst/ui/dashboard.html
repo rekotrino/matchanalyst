@@ -117,6 +117,22 @@ select { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid
 .tag.safe { background: color-mix(in srgb, var(--good) 20%, var(--surface)); color: var(--good-text); }
 .tag.value { background: color-mix(in srgb, var(--violet) 20%, var(--surface)); color: var(--ink); }
 .tag.under { background: color-mix(in srgb, var(--away) 20%, var(--surface)); color: var(--ink); }
+.tag.both { background: var(--good); color: var(--surface); }
+.tag.hp { background: color-mix(in srgb, var(--good) 35%, var(--surface)); color: var(--good-text); }
+.tag.win { background: var(--good); color: var(--surface); } .tag.loss { background: var(--away); color: var(--surface); } .tag.push, .tag.void { background: var(--line); color: var(--muted); }
+.daybar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 10px 0 4px; }
+.daybar button { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink); cursor: pointer; }
+.daybar button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.daybar button:disabled { opacity: 0.4; cursor: default; }
+.dist { position: relative; height: 34px; margin: 6px 0 2px; }
+.dist .rail { position: absolute; left: 0; right: 0; top: 14px; height: 6px; background: var(--line); border-radius: 3px; }
+.dist .iqr { position: absolute; top: 12px; height: 10px; background: color-mix(in srgb, var(--seq) 55%, var(--surface)); border-radius: 3px; }
+.dist .med { position: absolute; top: 8px; width: 2px; height: 18px; background: var(--ink); }
+.dist .ln { position: absolute; top: 4px; width: 2px; height: 26px; background: var(--away); }
+.dist .lab { position: absolute; top: 24px; font-size: 10px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px; font-size: 12px; margin: 6px 0; }
+.checks .ok::before { content: "✓ "; color: var(--good-text); font-weight: 700; } .checks .bad::before { content: "✗ "; color: var(--away); font-weight: 700; }
+.nobets { padding: 22px; text-align: center; border: 1px dashed var(--line); border-radius: 8px; font-weight: 700; letter-spacing: 0.08em; }
 .tag.thin { background: var(--surface-2); color: var(--muted); }
 tr.dim td { color: var(--muted); }
 .sugg { display: grid; gap: 4px; font-size: 13px; }
@@ -163,7 +179,7 @@ tr.dim td { color: var(--muted); }
   let D = null;
   const ALL = {};            // sport -> payload
   const STATES = {};         // sport -> view state, so switching sports keeps your place
-  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe' });
+  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null });
   let state = freshState();
   let sport = 'nba';
   try { const saved = JSON.parse(localStorage.getItem('board-state-v2') || '{}'); if (saved.sport) sport = saved.sport; Object.assign(STATES, saved.states || {}); } catch (e) {}
@@ -314,22 +330,23 @@ tr.dim td { color: var(--muted); }
   function gamesTable(games) {
     return `<div class="table-wrap"><table><thead><tr><th>Game</th><th>Tip (ET)</th><th class="num">Working score</th><th class="num">Home win</th><th class="num">Pure model</th><th class="num">Model wt</th><th>Reference</th><th class="num">Picks</th></tr></thead><tbody>
       ${games.map(g => { const r = g.ref, mo = g.model_only; const flag = g.ref_probs && Math.abs(g.ref_probs.p_home - mo.p_home_win) > 0.10;
-        return `<tr class="click" tabindex="0" data-game="${g.game.game_id}"><td><strong>${g.game.away} @ ${g.game.home}</strong></td><td>${tip(g.game.date_utc)}</td><td class="num">${g.pred.exp_home_pts.toFixed(0)}–${g.pred.exp_away_pts.toFixed(0)}</td><td class="num"><strong>${pct(g.pred.p_home_win)}</strong></td><td class="num">${pct(mo.p_home_win)}${flag ? ' <span title="pure model disagrees with reference by >10 pts">⚠</span>' : ''}</td><td class="num">${pct(g.pred.anchor_weight, 0)}</td><td>${r ? `${g.game.home} ${sg(r.spread_home)} / ${f1(r.total)}` : '–'}</td><td class="num">${g.picks.length}</td></tr>`; }).join('')}
+        return `<tr class="click" tabindex="0" data-game="${g.game.game_id}"><td><strong>${g.game.away} @ ${g.game.home}</strong></td><td>${score(g)}</td><td class="num">${g.pred.exp_home_pts.toFixed(0)}–${g.pred.exp_away_pts.toFixed(0)}</td><td class="num"><strong>${pct(g.pred.p_home_win)}</strong></td><td class="num">${pct(mo.p_home_win)}${flag ? ' <span title="pure model disagrees with reference by >10 pts">⚠</span>' : ''}</td><td class="num">${pct(g.pred.anchor_weight, 0)}</td><td>${r ? `${g.game.home} ${sg(r.spread_home)} / ${f1(r.total)}` : '–'}</td><td class="num">${g.picks.length}</td></tr>`; }).join('')}
     </tbody></table></div>`;
   }
   function viewBoard() {
-    const picks = D.games.flatMap(g => g.picks);
+    const games = dayGames(), picks = games.flatMap(g => g.picks);
     return `<div><div class="eyebrow">${esc(D.season_label)} season · board as of ${esc(D.generated_at.replace('T', ' '))}</div><h1>Today's board</h1><p class="sub">Working numbers blend the ratings model with the reference line while the model is uncalibrated. Picks are paper only.</p></div>
+      ${dayBar()}
       ${tiles()}
       <section class="card"><h2>Paper picks</h2>${pickRows(picks)}</section>
       <section class="card"><h2>Home win probability: pure model → working number</h2>
         <div class="legend"><span><span class="swatch" style="background:var(--muted)"></span>pure model</span><span><span class="swatch" style="background:var(--home)"></span>working number</span><span><span class="swatch" style="background:var(--ink-2);width:2px"></span>reference line (vig removed)</span></div>
-        <div class="table-wrap" style="max-width:820px">${dumbbell(D.games)}</div>
+        <div class="table-wrap" style="max-width:820px">${dumbbell(games)}</div>
         <p class="note">A long bar means the ratings disagree with the market, usually a roster change or injury the stats haven't seen yet. Click a game in the table for the full breakdown.</p></section>
-      <section class="card"><h2>Games</h2>${gamesTable(D.games)}</section>`;
+      <section class="card"><h2>Games</h2>${gamesTable(games)}</section>`;
   }
   function viewGames() {
-    return `<div><h1>Games</h1><p class="sub">Every game in the window. Click one for the model view, team profiles, rotations and the full market scan.</p></div><section class="card">${gamesTable(D.games)}</section>`;
+    return `<div><h1>Games</h1><p class="sub">Every game in the window. Click one for the model view, team profiles, rotations and the full market scan.</p></div>${dayBar()}<section class="card">${gamesTable(dayGames())}</section>`;
   }
   function issueChips(list) {
     return list.map(([kind, sev, text]) => {
@@ -460,6 +477,37 @@ tr.dim td { color: var(--muted); }
   }
 
 
+  // ---------- days: yesterday's results, today, and the days ahead ----------
+  const allDays = () => D.days || [...new Set(D.games.map(g => g.game.date_et))].sort();
+  function ensureDay() { const days = allDays(); if (!days.length) { state.day = null; return; }
+    if (!state.day || !days.includes(state.day)) { const t = D.today_et; state.day = days.includes(t) ? t : (days.find(d => d >= (t || '')) || days[days.length - 1]); } }
+  const dayGames = () => { ensureDay(); return D.games.filter(g => !state.day || g.game.date_et === state.day); };
+  const dayLabel = d => { const dt = new Date(d + 'T12:00:00Z'); const l = dt.toLocaleString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' }); return d === D.today_et ? l + ' · today (ET)' : d < (D.today_et || '') ? l + ' · results' : l; };
+  function dayBar() { const days = allDays(); if (days.length < 2) return ''; ensureDay(); const i = days.indexOf(state.day);
+    return `<div class="daybar"><button data-day="${days[i - 1] || ''}" ${i <= 0 ? 'disabled' : ''} aria-label="previous day">◀</button>${days.map(d => `<button data-day="${d}" aria-pressed="${d === state.day}">${esc(dayLabel(d))} <span class="note">${D.games.filter(g => g.game.date_et === d).length}</span></button>`).join('')}<button data-day="${days[i + 1] || ''}" ${i >= days.length - 1 ? 'disabled' : ''} aria-label="next day">▶</button></div>`; }
+  const score = g => g.game.completed ? `<strong>${g.game.away_score}–${g.game.home_score}</strong> final` : tip(g.game.date_utc);
+  function distStrip(sim, line, actual) {
+    if (!sim) return '';
+    const lo = Math.min(sim.p10, line != null ? line : sim.p10, actual != null ? actual : sim.p10) - 1, hi = Math.max(sim.p90, line != null ? line : sim.p90, actual != null ? actual : sim.p90) + 1;
+    const x = v => (100 * (v - lo) / (hi - lo)).toFixed(1) + '%';
+    return `<div class="dist" data-tip="10th–90th percentile of 10,000 simulated games; shaded = middle 50%; black = median${line != null ? '; red = line ' + line : ''}">
+      <div class="rail" style="left:${x(sim.p10)};right:${(100 - parseFloat(x(sim.p90))).toFixed(1)}%"></div><div class="iqr" style="left:${x(sim.p25)};width:${(parseFloat(x(sim.p75)) - parseFloat(x(sim.p25))).toFixed(1)}%"></div>
+      <div class="med" style="left:${x(sim.median)}"></div>${line != null ? `<div class="ln" style="left:${x(line)}"></div>` : ''}${actual != null ? `<div class="med" style="left:${x(actual)};background:var(--violet)"></div>` : ''}
+      <span class="lab" style="left:${x(sim.p10)}">floor ${sim.p10}</span><span class="lab" style="left:${x(sim.median)}">median ${sim.median}</span><span class="lab" style="left:${x(sim.p90)}">ceiling ${sim.p90}</span></div>`;
+  }
+  const SCEN_LABEL = { base: 'Normal game', more_minutes: 'More minutes (+12%)', fewer_minutes: 'Fewer minutes (−15%)', blowout: 'Blowout', tough_matchup: 'Tough matchup (−8%)', favorable_matchup: 'Favourable matchup (+8%)', teammate_out: 'Questionable teammate sits' };
+  function qualRow(q, withGame) {
+    const g = D.games.find(x => x.game.game_id === q.game_id);
+    const res = q.result ? `<span class="tag ${q.result}">${q.result}</span>${q.actual != null ? ` <span class="note">${q.actual}</span>` : ''}` : (q.completed ? '<span class="tag void">no box score</span>' : '<span class="pill thin">open</span>');
+    return `<tr class="click" data-pplayer="${esc(g ? g.props.find(it => it.player === q.player)?.player_id || '' : '')}" data-pgame="${esc(q.game_id)}">${withGame ? `<td>${esc(q.team + (g && g.game.home === q.team ? ' vs ' : ' @ ') + q.opp)}</td>` : ''}<td><strong>${esc(q.player)}</strong> <span class="note">${esc(q.team)}</span></td><td><strong>${q.side} ${q.line}</strong> ${statName(q.stat)}</td><td class="num"><strong>${Number(q.price).toFixed(2)}×</strong> <span class="note">${esc(q.book || '')}</span></td><td class="num">${pct(q.p, 0)}</td><td class="num">${q.implied != null ? pct(q.implied, 0) : '–'}</td><td class="num edge-pos">${sg(100 * q.ev)}%</td><td class="num">${q.robust != null ? pct(q.robust, 0) : '–'}</td><td class="num">${q.hit10 != null ? pct(q.hit10, 0) : '–'}</td><td class="num">${q.sim ? `${q.sim.median} <span class="note">(${q.sim.p25}–${q.sim.p75})</span>` : '–'}</td><td>${res}</td></tr>`;
+  }
+  const QUAL_HEAD = withGame => `<thead><tr>${withGame ? '<th>Game</th>' : ''}<th>Player</th><th>Bet</th><th class="num">Price</th><th class="num">Sim P</th><th class="num">Implied</th><th class="num">EV</th><th class="num">Worst case</th><th class="num">L10 hit</th><th class="num">Median (IQR)</th><th>Status</th></tr></thead>`;
+  function qualPanel(rows, withGame, title) {
+    const f = D.filter || {};
+    const intro = `<p class="note">Every one of these passed all six checks: simulated probability ≥ ${pct(f.prob || 0.65, 0)} over ${(f.n_sims || 10000).toLocaleString()} games · EV ≥ ${sg(100 * (f.min_ev || 0.03))}% at the best price · the player's real L10 hit rate on that exact line ≥ ${pct(f.hit_rate || 0.6, 0)} · worst-case scenario still ≥ ${pct(f.robust || 0.55, 0)} · matchup not adverse · availability verified (no injury flag, stable role, ${f.min_games || 8}+ games with the team). Ranked by probability, then EV.</p>`;
+    return `<section class="card"><h2>${esc(title)}</h2>${intro}${rows.length ? `<div class="table-wrap"><table>${QUAL_HEAD(withGame)}<tbody>${rows.map(q => qualRow(q, withGame)).join('')}</tbody></table></div>` : '<div class="nobets">NO QUALIFYING BETS</div><p class="note">Nothing on this slate passes every check. That is the filter working, not a bug: the high-probability lines are priced short, the priced-well lines are not high-probability enough, or availability is unverified.</p>'}</section>`;
+  }
+
   // ---------- props flow: matches -> match -> players -> previous numbers -> floor + odds ----------
   const odds = buy => buy ? (1 / buy).toFixed(2) + '×' : '–';
   const liquidLadder = it => it.fair_only ? it.ladder : it.ladder.filter(r => (r.liquidity || 0) >= D.config.min_liquidity);
@@ -491,22 +539,29 @@ tr.dim td { color: var(--muted); }
   }
   const SUGG_HEAD = (withGame) => `<thead><tr>${withGame ? '<th>Game</th>' : ''}<th>Player</th><th>Stat</th><th class="num">Line</th><th class="num">P(over)</th><th class="num">Best price (book)</th><th class="num">Edge</th><th class="num">L10 hit</th><th class="num">L10 avg</th><th>Books</th><th>Tag</th></tr></thead>`;
   function propsMatches() {
-    const hasProps = D.games.filter(g => g.props.length), noProps = D.games.filter(g => !g.props.length);
+    const games = dayGames();
+    const hasProps = games.filter(g => g.props.length), noProps = games.filter(g => !g.props.length);
+    const quals = (D.qualifying || []).filter(q => !state.day || q.date_et === state.day);
     const cards = hasProps.map(g => {
       const sug = suggestions(g), safe = sug.filter(x => x.tags.includes('safe') && x.r.p_over >= 0.7), val = sug.filter(x => x.tags.includes('value') && x.r.edge_over >= D.config.edge_threshold);
       const inj = g.injuries.filter(i => (i.status || '').toLowerCase() === 'out').length;
-      return `<div class="gcard" tabindex="0" data-pgame="${g.game.game_id}"><div class="eyebrow">${tip(g.game.date_utc)}</div><div class="m">${esc(g.away_name)} @ ${esc(g.home_name)}</div>
+      const nq = g.props.filter(it => it.qualifying).length;
+      return `<div class="gcard" tabindex="0" data-pgame="${g.game.game_id}"><div class="eyebrow">${score(g)}</div><div class="m">${esc(g.away_name)} @ ${esc(g.home_name)}</div>
         <div class="note">${g.props.length} player·stat ladders · ${g.props.some(x => !x.fair_only) ? sug.length + ' priced lines' : 'fair prices (no props market)'} · ${inj} listed out · books: ${esc((g.books || []).join(', ') || 'none')}</div>
-        <div><span class="tag safe">${safe.length} safe floors</span><span class="tag value">${val.length} value lines</span></div>
+        <div>${nq ? `<span class="tag both">${nq} qualifying</span>` : ''}<span class="tag safe">${safe.length} safe floors</span><span class="tag value">${val.length} value lines</span></div>
         <div class="note">Model: ${g.game.home} ${pct(g.pred.p_home_win, 0)} · total ${f1(g.pred.exp_total)}${g.pred.pace != null ? ' · pace ' + f1(g.pred.pace) : ''}</div></div>`;
     }).join('');
-    const later = noProps.map(g => `<div class="gcard" style="cursor:default;opacity:0.8"><div class="eyebrow">${tip(g.game.date_utc)}</div><div class="m">${esc(g.away_name)} @ ${esc(g.home_name)}</div><div class="note">Props not listed yet; Polymarket adds them on game day.</div></div>`).join('');
+    const later = noProps.map(g => `<div class="gcard" style="cursor:default;opacity:0.8"><div class="eyebrow">${score(g)}</div><div class="m">${esc(g.away_name)} @ ${esc(g.home_name)}</div><div class="note">Props not listed yet; Polymarket adds them on game day.</div></div>`).join('');
     // best floors across all games
     let all = [];
     hasProps.forEach(g => suggestions(g).forEach(x => all.push(Object.assign({ gm: g }, x))));
     const best = all.filter(x => !x.flagged && x.r.p_over >= 0.65 && edgeOver(x.r) >= -0.01).sort((a, b) => b.r.p_over - a.r.p_over || edgeOver(b.r) - edgeOver(a.r)).slice(0, 25);
     const bestVal = all.filter(x => !x.flagged && x.r.edge_over != null && x.r.p_over >= D.config.prob_floor).sort((a, b) => b.r.edge_over - a.r.edge_over).slice(0, 15);
-    return `<div><div class="eyebrow">${esc(D.season_label)} season · ${esc(D.generated_at.replace('T', ' '))}</div><h1>Player props</h1><p class="sub">Pick a match, open a player, see their previous numbers, and take the lowest line they are very likely to clear. Probabilities come from a playing-time × rate projection blended with the player's real hit rate on that line${D.no_props_note ? '. ' + esc(D.no_props_note) : '; only lines with real liquidity are suggested.'}</p></div>
+    const qp = D.qualifying_perf || {};
+    return `<div><div class="eyebrow">${esc(D.season_label)} season · ${esc(D.generated_at.replace('T', ' '))}</div><h1>Player props</h1><p class="sub">${D.qualifying ? 'Every player on every game is simulated 10,000 times (minutes, usage, shot volume and efficiency, blowouts, foul trouble, matchup and pace), the distribution is compared with every book\'s line, and only bets that pass every check are listed as qualifying. Then pick a match and open a player for the full evidence.' : 'Pick a match, open a player, see their previous numbers, and take the lowest line they are very likely to clear.'}${D.no_props_note ? ' ' + esc(D.no_props_note) : ''}</p></div>
+      ${dayBar()}
+      ${D.qualifying ? qualPanel(quals, true, state.day && state.day < (D.today_et || '') ? 'Qualifying bets · results' : 'Qualifying bets') : ''}
+      ${qp.n ? `<p class="note">Qualifying record so far: ${qp.wins}/${qp.n} (${pct(qp.hit_rate, 0)}, average simulated ${pct(qp.avg_prob, 0)}), flat-stake ROI ${sg(100 * qp.roi)}%.</p>` : ''}
       <section><h2>Matches</h2><div class="cards">${cards}${later}</div></section>
       <section class="card"><h2>Safest floors across tonight's games</h2><p class="note">${D.no_props_note ? 'Over lines we rate at 65%+, highest probability first. "Fair" is the price at which the bet breaks even; a book paying more than the fair payout is value.' : 'Liquid over lines with at least a 65% chance and no negative edge, highest probability first. Pays = 1 ÷ buy price.'}</p>${best.length ? `<div class="table-wrap"><table>${SUGG_HEAD(true)}<tbody>${best.map(x => suggRow(x, true)).join('')}</tbody></table></div>` : '<div class="empty">Nothing clears the bar yet.</div>'}</section>
       <section class="card"><h2>Best value lines (probability ≥ ${pct(D.config.prob_floor, 0)})</h2>${bestVal.length ? `<div class="table-wrap"><table>${SUGG_HEAD(true)}<tbody>${bestVal.map(x => suggRow(x, true)).join('')}</tbody></table></div>` : '<div class="empty">No value lines.</div>'}</section>`;
@@ -534,9 +589,10 @@ tr.dim td { color: var(--muted); }
       return `<section><h2><span class="swatch" style="background:${t === G.home ? 'var(--home)' : 'var(--away)'}"></span>${esc(t === G.home ? g.home_name : g.away_name)} <span class="note">rotation by recent minutes</span></h2><div class="cards">${cards}</div></section>`;
     };
     return `<div><div class="crumbs"><button data-pback="matches">Matches</button><span>›</span><span>${esc(G.away + ' @ ' + G.home)}</span></div>
-      <div class="eyebrow" style="margin-top:8px">${tip(G.date_utc)}</div><h1>${esc(g.away_name)} @ ${esc(g.home_name)}</h1>
+      <div class="eyebrow" style="margin-top:8px">${score(g)}</div><h1>${esc(g.away_name)} @ ${esc(g.home_name)}</h1>
       <p class="sub">Model: ${G.home} win ${pct(g.pred.p_home_win, 0)} · expected ${G.home} ${f1(g.pred.exp_home_pts)} – ${G.away} ${f1(g.pred.exp_away_pts)}${g.pred.pace != null ? ' · pace ' + f1(g.pred.pace) : ''}${g.pred.notes.length ? ' · ' + esc(g.pred.notes.join('; ')) : ''}. <button class="back" data-game="${G.game_id}">Full game breakdown</button></p></div>
       ${warn.length ? `<p class="warn">Not suggested until you check the news: ${esc(warn.join(' · '))}. "Market doubt" means a liquid line is priced far below our number, which usually means a late scratch or a minutes limit the stats don't know about.</p>` : ''}
+      ${D.qualifying ? qualPanel((D.qualifying || []).filter(q => q.game_id === G.game_id), false, 'Qualifying bets in this game') : ''}
       <section class="card"><h2>Safest floors in this game</h2>${safe.length ? `<div class="table-wrap"><table>${SUGG_HEAD(false)}<tbody>${safe.map(x => suggRow(Object.assign({ gm: g }, x), false)).join('')}</tbody></table></div>` : '<div class="empty">No liquid floor clears 65% yet.</div>'}</section>
       <section class="card"><h2>Value lines in this game</h2>${val.length ? `<div class="table-wrap"><table>${SUGG_HEAD(false)}<tbody>${val.map(x => suggRow(Object.assign({ gm: g }, x), false)).join('')}</tbody></table></div>` : '<div class="empty">No positive-edge value line.</div>'}</section>
       ${teamBlock(G.home)}${teamBlock(G.away)}`;
@@ -556,22 +612,28 @@ tr.dim td { color: var(--muted); }
     const ladders = statsOrder().filter(s => items.some(it => it.stat === s)).map(s => {
       const it = items.find(x => x.stat === s), vals = rec.map(x => x[s] ?? 0);
       const sp = it.safe_pick, vp = it.value_pick, up = it.under_pick, fl = it.floor_liquid;
-      const lineForChart = sp ? sp.line : (it.floor_liquid != null ? it.floor_liquid : null);
+      const q = it.qualifying, focus = q ? q.line : (sp ? sp.line : (it.floor_liquid != null ? it.floor_liquid : (it.sim ? it.sim.median + 0.5 : null)));
+      const lineForChart = it.qualifying ? it.qualifying.line : (sp ? sp.line : (it.floor_liquid != null ? it.floor_liquid : null));
       const rows = it.ladder.map(r => { const liq = r.real != null ? r.real : (r.liquidity || 0) >= D.config.min_liquidity; const tags = [];
         const same = (a, b) => a && b && (a.market_id != null ? a.market_id === b.market_id : a.line === b.line); if (same(sp, r)) tags.push('safe'); if (same(vp, r)) tags.push('value'); if (same(up, r)) tags.push('under'); if (liq && fl === r.line) tags.push('floor'); if (!liq) tags.push('thin');
-        return `<tr class="${liq || it.fair_only ? '' : 'dim'}"><td class="num"><strong>${r.line}</strong></td><td class="num">${pct(r.p_over, 0)}</td><td class="num">${buyCell(r, 'over')}</td><td class="num ${edgeOver(r) > 0 ? 'edge-pos' : 'edge-neg'}">${r.edge_over != null ? sg(100 * r.edge_over) : '–'}</td><td class="num">${pct(1 - r.p_over, 0)}</td><td class="num">${buyCell(r, 'under')}</td><td class="num ${(r.edge_under || 0) > 0 ? 'edge-pos' : 'edge-neg'}">${r.edge_under != null ? sg(100 * r.edge_under) : '–'}</td><td class="num">${r.hit10 != null ? pct(r.hit10, 0) : '–'} / ${r.hit5 != null ? pct(r.hit5, 0) : '–'}</td><td>${r.has_market ? esc(Object.keys(r.books || {}).join(', ')) + (r.liquidity ? ` <span class="note">$${Math.round(r.liquidity).toLocaleString()}</span>` : '') : '<span class="note">no market</span>'}</td><td>${tags.filter(x => !(it.fair_only && x === 'thin')).map(x => `<span class="tag ${x}">${x}</span>`).join('')}</td></tr>`; }).join('');
-      const sugg = sp ? `<div class="sugg"><div class="big"><span class="tag safe">floor we take</span>${statName(s)} over <strong>${sp.line}</strong> · ${pct(sp.p_over, 0)} to clear · ${sp.yes_buy != null ? `best price ${odds(sp.yes_buy)} at ${esc(sp.best_over_book || 'market')}` : `fair price ${sp.p_over.toFixed(2)} (${odds(sp.p_over)}); take it if your book pays more`}</div>
+        return `<tr class="${liq || it.fair_only ? '' : 'dim'}"><td class="num"><strong>${r.line}</strong></td><td class="num">${pct(r.p_over, 0)}</td><td class="num">${buyCell(r, 'over')}</td><td class="num ${edgeOver(r) > 0 ? 'edge-pos' : 'edge-neg'}">${r.edge_over != null ? sg(100 * r.edge_over) : '–'}</td><td class="num">${pct(1 - r.p_over, 0)}</td><td class="num">${buyCell(r, 'under')}</td><td class="num ${(r.edge_under || 0) > 0 ? 'edge-pos' : 'edge-neg'}">${r.edge_under != null ? sg(100 * r.edge_under) : '–'}</td><td class="num">${r.ev_over != null ? `<span class="${r.ev_over > 0 ? 'edge-pos' : 'edge-neg'}">${sg(100 * r.ev_over)}%</span>` : '–'} / ${r.ev_under != null ? `<span class="${r.ev_under > 0 ? 'edge-pos' : 'edge-neg'}">${sg(100 * r.ev_under)}%</span>` : '–'}</td><td class="num">${r.robust_over != null ? pct(r.robust_over, 0) : '–'} / ${r.robust_under != null ? pct(r.robust_under, 0) : '–'}</td><td class="num">${r.hit10 != null ? pct(r.hit10, 0) : '–'} / ${r.hit5 != null ? pct(r.hit5, 0) : '–'}</td><td>${r.has_market ? esc(Object.keys(r.books || {}).join(', ')) + (r.liquidity ? ` <span class="note">$${Math.round(r.liquidity).toLocaleString()}</span>` : '') : '<span class="note">no market</span>'}</td><td>${q && q.line === r.line ? '<span class="tag both">qualifying ' + q.side + '</span>' : ''}${r.tier_over ? `<span class="tag ${r.tier_over === 'both' ? 'both' : r.tier_over === 'high-prob' ? 'hp' : 'value'}">${r.tier_over} over</span>` : ''}${r.tier_under ? `<span class="tag ${r.tier_under === 'both' ? 'both' : r.tier_under === 'high-prob' ? 'hp' : 'value'}">${r.tier_under} under</span>` : ''}${tags.filter(x => !(it.fair_only && x === 'thin')).map(x => `<span class="tag ${x}">${x}</span>`).join('')}</td></tr>`; }).join('');
+      const simBlock = it.sim ? `<div><h3 style="margin:8px 0 2px">Simulation · 10,000 games</h3>${distStrip(it.sim, focus, it.actual)}
+          <p class="note">mean ${f1(it.sim.mean)} · median ${it.sim.median} · 25th–75th ${it.sim.p25}–${it.sim.p75} · floor (10th) ${it.sim.p10} · ceiling (90th) ${it.sim.p90}${it.actual != null ? ` · <strong>actual ${it.actual}</strong>` : ''}. Minutes ${it.proj_min} ± ${f1(it.min_sd)}${it.p_blowout != null ? ` · blowout risk ${pct(it.p_blowout, 0)}` : ''}${it.b2b ? ' · back-to-back' : ''}.</p>
+          ${it.scenarios ? `<div class="table-wrap"><table><thead><tr><th>Scenario</th><th class="num">Median</th><th class="num">P(over ${focus})</th><th class="num">P(under ${focus})</th></tr></thead><tbody>${it.scenarios.map(r => `<tr><td>${esc(SCEN_LABEL[r.scenario] || r.scenario)}</td><td class="num">${r.median}</td><td class="num">${pct(r.p_over, 0)}</td><td class="num">${pct(1 - r.p_over, 0)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+          ${q ? `<div class="sugg"><div class="big"><span class="tag both">qualifying</span>${q.side} <strong>${q.line}</strong> ${statName(s)} · ${pct(q.p, 0)} · <strong>${Number(q.price).toFixed(2)}×</strong> at ${esc(q.book || '')} · EV ${sg(100 * q.ev)}% · implied ${q.implied != null ? pct(q.implied, 0) : '–'}${q.result ? ` · <span class="tag ${q.result}">${q.result}</span>` : ''}</div><div class="checks">${Object.entries(q.checks || {}).map(([k, v]) => `<span class="${v ? 'ok' : 'bad'}">${esc(k)}</span>`).join('')}</div></div>` : ''}
+          <p class="note">Windows: L5 ${f1(it.l5_avg)} · L10 ${f1(it.l10_avg)} · L20 ${f1(it.l20_avg)} · season ${f1(it.season_avg)}${it.splits ? ` · home ${it.splits.home != null ? f1(it.splits.home) : '–'} (${it.splits.home_n}) / away ${it.splits.away != null ? f1(it.splits.away) : '–'} (${it.splits.away_n})` : ''}${it.h2h && it.h2h.n ? ` · vs ${esc(opp)} ${f1(it.h2h.avg)} in ${it.h2h.n} game${it.h2h.n > 1 ? 's' : ''}` : ''}${it.consistency != null ? ` · consistency (sd/mean, L20) ${it.consistency}` : ''}${it.usage != null ? ` · usage/36 ${f1(it.usage)}` : ''}${it.ts_pct != null ? ` · TS% ${pct(it.ts_pct, 0)}` : ''}${it.n_games != null ? ` · ${it.n_games} games with ${esc(it.team)}` : ''}.</p></div>` : '';
+      const sugg = (simBlock) + (sp ? `<div class="sugg"><div class="big"><span class="tag safe">floor we take</span>${statName(s)} over <strong>${sp.line}</strong> · ${pct(sp.p_over, 0)} to clear · ${sp.yes_buy != null ? `best price ${odds(sp.yes_buy)} at ${esc(sp.best_over_book || 'market')}` : `fair price ${sp.p_over.toFixed(2)} (${odds(sp.p_over)}); take it if your book pays more`}</div>
         ${vp && vp.line !== sp.line && vp.yes_buy != null ? `<div><span class="tag value">value</span>over ${vp.line} · ${pct(vp.p_over, 0)} · ${odds(vp.yes_buy)} at ${esc(vp.best_over_book || '')} · edge ${sg(100 * vp.edge_over)}</div>` : ''}
         ${up ? `<div><span class="tag under">under</span>under ${up.line} · ${pct(1 - up.p_over, 0)} · ${odds(up.no_buy)} at ${esc(up.best_under_book || '')} · edge ${sg(100 * up.edge_under)}</div>` : ''}</div>`
-        : `<div class="sugg"><div class="note">No liquid over line for ${statName(s).toLowerCase()} that we rate at 60%+ without paying over the odds.${up ? `</div><div><span class="tag under">under</span>under ${up.line} · ${pct(1 - up.p_over, 0)} · pays ${odds(up.no_buy)} · edge ${sg(100 * up.edge_under)}` : ''}</div></div>`;
+        : `<div class="sugg"><div class="note">No liquid over line for ${statName(s).toLowerCase()} that we rate at 60%+ without paying over the odds.${up ? `</div><div><span class="tag under">under</span>under ${up.line} · ${pct(1 - up.p_over, 0)} · pays ${odds(up.no_buy)} · edge ${sg(100 * up.edge_under)}` : ''}</div></div>`);
       return `<section class="card stack"><h2>${statName(s)}</h2>
         <div class="row two"><div>${columns(vals, labs, { color: 'var(--seq)', avg: it.l10_avg, line: lineForChart, tips: rec.map((x, i) => `${x.date} ${x.home ? 'vs' : '@'} ${x.opp}: ${vals[i]} in ${x[minKey()]} ${minLabel().toLowerCase()}`), label: statName(s) + ' by game' })}
             <p class="note">L10 avg ${f1(it.l10_avg)} (sd ${f1(it.l10_sd)}) · L5 ${f1(it.l5_avg)} · season ${f1(it.season_avg)} · lowest in L10: <strong>${it.l10_min}</strong>. Projection <strong>${f1(it.proj)}</strong> ± ${f1(it.proj_sd)} at ${it.proj_min} ${minLabel().toLowerCase()}${it.matchup !== 1 ? ` · matchup ×${it.matchup.toFixed(3)}` : ''}${it.pace_factor && it.pace_factor !== 1 ? ` · pace ×${it.pace_factor.toFixed(3)}` : ''}${it.bump ? ` · +${it.bump.toFixed(1)} min (teammate out)` : ''}${it.rate60 != null ? ` · ${f1(it.rate60)} per 60` : ''}${it.p10 != null ? `. 10th percentile ≈ ${it.p10}` : ''}.${it.starter_note ? ` <strong>${esc(it.starter_note)}</strong>` : ''}</p></div>
           <div>${sugg}</div></div>
-        <div class="table-wrap"><table><thead><tr><th class="num">Line</th><th class="num">P(over)</th><th class="num">Best over (book)</th><th class="num">Edge</th><th class="num">P(under)</th><th class="num">Best under (book)</th><th class="num">Edge</th><th class="num">Hit L10 / L5</th><th>Books</th><th>Tag</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+        <div class="table-wrap"><table><thead><tr><th class="num">Line</th><th class="num">P(over)</th><th class="num">Best over (book)</th><th class="num">Edge</th><th class="num">P(under)</th><th class="num">Best under (book)</th><th class="num">Edge</th><th class="num">EV over / under</th><th class="num">Worst case o / u</th><th class="num">Hit L10 / L5</th><th>Books</th><th>Tag</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
     }).join('');
     return `<div><div class="crumbs"><button data-pback="matches">Matches</button><span>›</span><button data-pback="match">${esc(G.away + ' @ ' + G.home)}</button><span>›</span><span>${esc(P.player)}</span></div>
-      <div class="eyebrow" style="margin-top:8px">${esc(t === G.home ? g.home_name : g.away_name)} · ${esc(P.position || '')} · ${P.games} games stored · ${tip(G.date_utc)} vs ${esc(opp)}</div><h1>${esc(P.player)}</h1>
+      <div class="eyebrow" style="margin-top:8px">${esc(t === G.home ? g.home_name : g.away_name)} · ${esc(P.position || '')} · ${P.games} games stored · ${score(g)} vs ${esc(opp)}</div><h1>${esc(P.player)}</h1>
       <p class="sub">${matchLine}${outs.length ? ` · ${esc(t)} out: ${esc(outs.join(', '))}` : ''}</p>
       ${items.length && items[0].flags && items[0].flags.length ? `<p class="warn">${esc(items[0].flags.join(', '))}: the market is pricing this player as if he may not play or may be limited. No suggestion until that is checked.</p>` : ''}</div>
       ${items.length ? ladders : '<section class="card"><div class="empty">No props listed for this player, or too few regular-season games to project.</div></section>'}
@@ -608,6 +670,7 @@ tr.dim td { color: var(--muted); }
     const pg = e.target.closest('[data-pgame]'); if (pg) { state.view = 'props'; state.pgame = pg.dataset.pgame; state.pplayer = null; render(); return; }
     const gr = e.target.closest('[data-game]'); if (gr) { state.view = 'game'; state.game = gr.dataset.game; state.mfilter = 'all'; render(); return; }
     const mf = e.target.closest('[data-mf]'); if (mf) { state.mfilter = mf.dataset.mf; render(); return; }
+    const dy = e.target.closest('[data-day]'); if (dy && dy.dataset.day) { state.day = dy.dataset.day; state.pgame = null; state.pplayer = null; render(); return; }
     const pr = e.target.closest('[data-player]'); if (pr) { state.player = pr.dataset.player; render(); return; }
   });
   document.addEventListener('keydown', e => { if (e.key === 'Enter') { const t = e.target.closest('[data-game],[data-player],[data-pgame],[data-pplayer]'); if (t) t.click(); } });

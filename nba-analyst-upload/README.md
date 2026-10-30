@@ -66,6 +66,57 @@ If this machine can't reach the APIs, load a snapshot collected elsewhere:
 
     python -m nba_analyst.load_snapshot data\nba_analyst.sqlite data\snapshot_2026-10-18
 
+## Simulation engine (player props)
+
+Every rotation player in every game is simulated 10,000 times
+(`nba_analyst/analyst/sim.py`). A simulated game draws minutes (projected from
+regular-season games, with blowout, foul-trouble and back-to-back
+disruptions), a shared hot/cold usage factor, Poisson shot volume (FGA, 3PA
+share, FTA) scaled by minutes, pace and the opponent's defence against the
+player's position, and Beta-distributed shooting efficiency around the
+player's own percentages. Points are built from the made shots, so points,
+threes and combo props stay correlated; rebounds, assists, steals, blocks and
+turnovers are overdispersed Poisson counts. Last season is a weak prior when
+the current season is thin. Every ladder shows the mean, median, 25th/75th
+percentiles, floor (10th) and ceiling (90th), P(over)/P(under) for every book
+line and for alternative lines, and the same probabilities under stress
+scenarios (more/fewer minutes, blowout, tough or favourable matchup, a
+questionable teammate sitting).
+
+A bet is **qualifying** only when every check passes on one rung: simulated
+probability ≥ 65%, EV ≥ +3% at the best price across books (implied
+probability is taken with the bookmaker margin removed), the player's real
+last-10 hit rate on that exact line ≥ 60%, the worst stress scenario still
+≥ 55%, the matchup is not adverse, availability is verified (no injury flag,
+stable role, no unpredictable minutes, 8+ games with the team), and the edge
+is plausible (an edge above 25 points means a bad line, not a good bet).
+Overs and unders are tested on equal terms. When nothing passes the board
+says **NO QUALIFYING BETS**. Qualifying bets are logged
+(`qualifying_log`) and graded after the game, and the Props tab has a day
+switcher so yesterday's results sit next to today's slate. All thresholds are
+in `BettingConfig` (`config.py`).
+
+### Backtest and calibration
+
+    python -m nba_analyst backtest
+
+replays every completed regular-season game walk-forward (only earlier games
+are used for each prediction), scores the simulated probabilities (Brier,
+log loss, calibration by bucket, hit rate of selections at the 65%
+threshold for overs and unders) and fits a Platt recalibration that the live
+pipeline reads from `data/calibration.json`. On 236k evaluations from the
+2025-26 and early 2026-27 seasons the raw simulator was within 1 point of
+observed frequencies up to 85% and slightly over-confident above that; the
+fitted correction (a=+0.13, b=0.88) is applied automatically. Re-run after
+each month of games. The ROI figure in the report is at a hypothetical -110
+on our own alternative lines; it is a calibration check, not a market result.
+
+Not in the data (and therefore not in the model): defensive schemes and
+primary-defender assignments, confirmed starting lineups before tip-off, and
+minutes restrictions that are not on ESPN's injury report. Treat "availability
+verified" as "no red flag in the data", and still check the news for a late
+scratch.
+
 ## How to read a report
 
 - **Pure model** is what the ratings alone say. Early in the season it is

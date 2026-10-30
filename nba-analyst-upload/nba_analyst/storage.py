@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS predictions (
     created_at TEXT NOT NULL,
     PRIMARY KEY (game_id, created_at)
 );
+CREATE TABLE IF NOT EXISTS qualifying_log (
+    game_id TEXT NOT NULL, date_et TEXT NOT NULL, player TEXT NOT NULL, team TEXT, opp TEXT,
+    stat TEXT NOT NULL, line REAL NOT NULL, side TEXT NOT NULL,
+    prob REAL NOT NULL, ev REAL, price REAL, book TEXT, implied REAL, robust REAL, hit10 REAL,
+    created_at TEXT NOT NULL, actual REAL, result TEXT, graded_at TEXT,
+    PRIMARY KEY (game_id, player, stat, line, side)
+);
 CREATE TABLE IF NOT EXISTS picks (
     pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id TEXT NOT NULL,
@@ -162,6 +169,36 @@ class Store:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM games WHERE completed=0 AND date_et>=? AND date_et<=? ORDER BY date_utc",
             (from_et, to_et))]
+
+    def games_between(self, from_et, to_et):
+        """Every game in the window, finished or not."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM games WHERE date_et>=? AND date_et<=? ORDER BY date_utc", (from_et, to_et))]
+
+    def game_player_stats(self, game_id):
+        return [dict(r) for r in self.conn.execute("SELECT * FROM player_game_stats WHERE game_id=?", (game_id,))]
+
+    def add_qualifying(self, game, rows):
+        ts = now_iso()
+        for q in rows:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO qualifying_log (game_id,date_et,player,team,opp,stat,line,side,prob,ev,price,book,
+                   implied,robust,hit10,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (game["game_id"], game["date_et"], q["player"], q["team"], q["opp"], q["stat"], q["line"], q["side"],
+                 q["p"], q["ev"], q["price"], q["book"], q["implied"], q["robust"], q["hit10"], ts))
+
+    def ungraded_qualifying(self):
+        return [dict(r) for r in self.conn.execute(
+            """SELECT q.* FROM qualifying_log q JOIN games g ON g.game_id=q.game_id
+               WHERE q.result IS NULL AND g.completed=1""")]
+
+    def grade_qualifying(self, game_id, player, stat, line, side, actual, result):
+        self.conn.execute(
+            "UPDATE qualifying_log SET actual=?, result=?, graded_at=? WHERE game_id=? AND player=? AND stat=? AND line=? AND side=?",
+            (actual, result, now_iso(), game_id, player, stat, line, side))
+
+    def qualifying_history(self):
+        return [dict(r) for r in self.conn.execute("SELECT * FROM qualifying_log ORDER BY date_et, created_at")]
 
     def games_missing_stats(self):
         return [dict(r) for r in self.conn.execute(

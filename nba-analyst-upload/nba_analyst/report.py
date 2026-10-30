@@ -187,6 +187,26 @@ def daily_digest(ctx, results, perf):
              f"Betting config: edge ≥ {100 * SETTINGS.betting.edge_threshold:.1f} pts, prob ≥ {100 * SETTINGS.betting.prob_floor:.0f}%, "
              f"liquidity ≥ ${SETTINGS.betting.min_liquidity:,.0f}, quarter-Kelly, bankroll ${SETTINGS.betting.bankroll:,.0f}.")
     L.append("")
+    # ---- qualifying player props (strict filter) ----
+    b = SETTINGS.betting
+    quals = [(r["game"], i) for r in results for i in r.get("prop_items", []) if i.get("qualifying")]
+    quals.sort(key=lambda t: (-t[1]["qualifying"]["p"], -(t[1]["qualifying"]["ev"] or 0)))
+    L.append("## Qualifying player props")
+    L.append(f"Filter: simulated P ≥ {100 * b.qualify_prob:.0f}% over {b.n_sims:,} games · EV ≥ {100 * b.qualify_min_ev:+.0f}% · "
+             f"L10 hit rate ≥ {100 * b.qualify_hit_rate:.0f}% · worst-case scenario ≥ {100 * b.qualify_robust:.0f}% · "
+             f"matchup not adverse · availability verified · {b.qualify_min_games}+ games with the team · edge plausible.")
+    L.append("")
+    if not quals:
+        L.append("**NO QUALIFYING BETS**")
+    else:
+        L.append("| Game | Player | Bet | Price (book) | Sim P | Implied | EV | Worst case | L10 hit | Median (IQR) |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|")
+        for g, i in quals:
+            q, sm = i["qualifying"], i.get("sim") or {}
+            L.append(f"| {g['away']} @ {g['home']} | {i['player']} ({i['team']}) | {q['side']} {q['line']} {i['stat_label']} | "
+                     f"{q['price']:.2f} ({q['book']}) | {100 * q['p']:.0f}% | {100 * q['implied']:.0f}% | {100 * q['ev']:+.1f}% | "
+                     f"{100 * (q['robust'] or 0):.0f}% | {100 * (q['hit10'] or 0):.0f}% | {sm.get('median')} ({sm.get('p25')}–{sm.get('p75')}) |")
+    L.append("")
     L.append("## Today's board")
     L.append("| Game | Tip (ET) | Working score | Home win | Pure model home win | Ref line | Picks |")
     L.append("|---|---|---|---|---|---|---|")

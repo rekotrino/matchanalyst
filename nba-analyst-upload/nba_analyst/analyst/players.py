@@ -56,7 +56,7 @@ def player_games(rows):
     return by
 
 
-def profile(games, windows=(5, 10)):
+def profile(games, windows=(5, 10, 20)):
     """Rolling averages, per-minute rates, trends and consistency for one player."""
     if not games:
         return None
@@ -84,6 +84,18 @@ def profile(games, windows=(5, 10)):
         out[name] = block
     l5, l10, s = out["last5"], out["last10"], out["season"]
     out["trend"] = {k: l5[k] - l10[k] for k in ("min", "pts", "reb", "ast")}
+    # splits and consistency (sample sizes travel with the numbers)
+    home = [x for x in games if x["team"] == x["home"]]
+    away = [x for x in games if x["team"] != x["home"]]
+    out["splits"] = {}
+    for name, win in (("home", home), ("away", away)):
+        out["splits"][name] = {"n": len(win), **{st: (mean(x.get(st) or 0 for x in win) if win else None)
+                                                   for st in ("min", "pts", "reb", "ast", "pra", "tpm")}}
+    out["consistency"] = {}
+    for st in ("pts", "reb", "ast", "pra", "tpm"):
+        vals = [x.get(st) or 0 for x in games[-20:]]
+        mu = mean(vals) if vals else 0
+        out["consistency"][st] = round(pstdev(vals) / mu, 2) if mu and len(vals) > 1 else None
     out["recent"] = [{"date": x["date_et"], "opp": x["away"] if x["team"] == x["home"] else x["home"],
                       "home": x["team"] == x["home"], "min": x.get("min"), "pts": x.get("pts"),
                       "reb": x.get("reb"), "ast": x.get("ast"), "tpm": x.get("tpm"), "stl": x.get("stl"),
@@ -91,6 +103,15 @@ def profile(games, windows=(5, 10)):
                       "season_type": x.get("season_type")}
                      for x in games[-10:]]
     return out
+
+
+def vs_opponent(all_games, opp, stat):
+    """Head-to-head log against one opponent (any team, any season)."""
+    h2h = [x for x in all_games if (x["away"] if x["team"] == x["home"] else x["home"]) == opp]
+    if not h2h:
+        return {"n": 0, "avg": None, "games": []}
+    return {"n": len(h2h), "avg": round(mean(x.get(stat) or 0 for x in h2h), 1),
+            "games": [{"date": x["date_et"], "min": x.get("min"), "val": x.get(stat) or 0} for x in h2h[-5:]]}
 
 
 def hit_rate(games, stat, line, n=10):

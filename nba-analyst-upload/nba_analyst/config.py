@@ -1,3 +1,4 @@
+import os
 """All tunable knobs live here. Phase 1 backtesting will calibrate the model
 parameters; the betting parameters are deliberately conservative."""
 
@@ -41,6 +42,20 @@ class BettingConfig:
     max_stake_pct: float = 0.03
     max_picks_per_game: int = 3         # one side market + one total + props (one per player)
     prop_min_games: int = 5             # player needs this many games with the team to price a prop
+    # --- qualifying-bet filter (strict; validated by `backtest`) ---
+    qualify_prob: float = 0.65          # simulated hit probability needed
+    qualify_min_games: int = 8          # games with the current team
+    qualify_hit_rate: float = 0.60      # independent indicator: actual L10 hit rate on that line
+    qualify_robust: float = 0.55        # min probability across stress scenarios
+    qualify_min_ev: float = 0.03        # expected value per unit staked at the best price
+    qualify_max_edge: float = 0.25      # our prob minus devigged implied above this = suspect line, not an edge
+    qualify_min_sd: float = 8.0         # minutes sd above this = unpredictable minutes
+    n_sims: int = 10000
+    n_sims_scenario: int = 4000
+    # Platt recalibration of simulated probabilities: p' = sigmoid(a + b*logit(p)); (0,1) = identity
+    calibration_a: float = 0.0
+    calibration_b: float = 1.0
+    hit_rate_weight: float = 0.25       # blend of simulated P with the player's real L10 hit rate
     max_picks_per_day: int = 6
 
 
@@ -57,3 +72,19 @@ class Settings:
 
 
 SETTINGS = Settings()
+
+
+def _load_calibration():
+    """Recalibration fitted by `backtest` (data/calibration.json) overrides the defaults."""
+    import json as _json
+    path = os.path.join(os.path.dirname(SETTINGS.db_path) or "data", "calibration.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            c = _json.load(f)
+        SETTINGS.betting.calibration_a = float(c.get("calibration_a", 0.0))
+        SETTINGS.betting.calibration_b = float(c.get("calibration_b", 1.0))
+    except (OSError, ValueError):
+        pass
+
+
+_load_calibration()
