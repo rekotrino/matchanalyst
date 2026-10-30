@@ -195,10 +195,12 @@ def build_payload(store: Store, days_ahead=None):
     value = _round(build_value(results, now, now.isoformat(timespec="minutes")))
     market = _round(build_market(results, store, now, now.isoformat(timespec="minutes"), snapshot=False))
     recs = store.recs_history()
-    systems = {name: system_stats([r for r in recs if r["system"] == name]) for name in ("prediction", "value", "market")}
+    names = ["prediction", "value", "market", "floors", "valuelines"] + sorted({r["system"] for r in recs} - {"prediction", "value", "market", "floors", "valuelines"})
+    systems = {name: system_stats([r for r in recs if r["system"] == name]) for name in names}
+    keep_from = str(today - timedelta(days=60))
     recent_recs = [{k: r[k] for k in ("system", "game_id", "date_et", "player", "team", "opp", "stat", "side", "line", "price", "book",
                                       "prob", "ev", "implied", "created_at", "closing_price", "closing_line", "actual", "result")}
-                   for r in recs if r["date_et"] >= str(start)]
+                   for r in recs if r["date_et"] >= keep_from]
     return {
         "value": value, "market": market, "systems": systems, "recs": _round(recent_recs),
         "generated_at": datetime.now(ET).isoformat(timespec="minutes"),

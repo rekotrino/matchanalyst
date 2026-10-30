@@ -210,7 +210,7 @@ tr.dim td { color: var(--muted); }
   let D = null;
   const ALL = {};            // sport -> payload
   const STATES = {};         // sport -> view state, so switching sports keeps your place
-  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null, vsort: 'ev', vdir: -1, vfilter: { side: 'all', kind: 'all', risk: 'all', book: 'all', game: 'all', q: '', minp: 0, minev: 0 }, vopen: null, msec: 'opps', mopen: null, msort: 'score' });
+  const freshState = () => ({ view: 'props', game: null, team: null, player: null, mfilter: 'all', pgame: null, pplayer: null, pstat: 'all', psort: 'safe', day: null, vsort: 'ev', vdir: -1, vfilter: { side: 'all', kind: 'all', risk: 'all', book: 'all', game: 'all', q: '', minp: 0, minev: 0 }, vopen: null, msec: 'opps', mopen: null, msort: 'score', strategy: 'prediction' });
   let state = freshState();
   let sport = 'nba';
   try { const saved = JSON.parse(localStorage.getItem('board-state-v2') || '{}'); if (saved.sport) sport = saved.sport; Object.assign(STATES, saved.states || {}); } catch (e) {}
@@ -498,45 +498,33 @@ tr.dim td { color: var(--muted); }
       ${detail}
       <section class="card"><h2>${esc(T.name)} rotation</h2>${rotationTable(T.rotation, [], { clickable: true })}</section>`;
   }
+  const STRATEGY = { prediction: ['Qualifying bets', 'the engine\'s qualifying bets: every check passed, one per player per game'], floors: ['Safest floors', 'over lines rated ≥ 65% with no negative edge, highest probability first (top 25 per day, one per player)'], valuelines: ['Best value lines', 'largest positive edge at ≥ the probability floor (top 15 per day, one per player)'], value: ['Value page', 'positive-EV singles ≥ 60%, low/medium risk, one per player'], market: ['Market page', 'ranked opportunities scoring ≥ 60'], scanner: ['Scanner picks', 'the original edge-based scanner across game lines and props (quarter-Kelly stakes)'] };
   function viewPicks() {
-    const hist = D.picks_history, perf = D.perf;
-    const rows = hist.slice().reverse().map(p => `<tr><td>${esc(p.created_at.slice(0, 10))}</td><td>${esc(p.market_type)}${p.line != null ? ' ' + p.line : ''}</td><td><strong>${esc(p.outcome)}</strong></td><td class="num">${pct(p.our_prob)}</td><td class="num">${Number(p.price).toFixed(3)}</td><td class="num">${sg(100 * p.edge)}</td><td class="num">$${Number(p.stake).toFixed(2)}</td><td>${p.result ? `<span class="pill ${p.result === 'win' ? 'cand' : 'none'}">${p.result}</span>` : '<span class="pill thin">open</span>'}</td><td class="num">${p.pnl != null ? money(p.pnl) : '–'}</td><td class="num">${p.closing_price != null ? sg(100 * (p.closing_price - p.price)) : '–'}</td></tr>`).join('');
-    return `<div><h1>Picks</h1><p class="sub">Every paper pick ever logged, with the price at the time. After each game, <code>grade</code> fills in the result, P&amp;L and the last price seen before tip-off; closing line value (CLV) is the number to watch.</p></div>
-      ${tiles()}
-      ${perf.n ? `<section class="card"><h2>Cumulative paper P&amp;L</h2>${pnlLine(hist)}</section>` : ''}
-      <section class="card"><h2>History</h2>${hist.length ? `<div class="table-wrap"><table><thead><tr><th>Logged</th><th>Market</th><th>Side</th><th class="num">Our prob</th><th class="num">Price</th><th class="num">Edge</th><th class="num">Stake</th><th>Result</th><th class="num">P&amp;L</th><th class="num">CLV</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">No picks logged yet. Run the daily pipeline and picks will appear here.</div>'}</section>`;
-  }
-
-
-  // ---------- days: yesterday's results, today, and the days ahead ----------
-  const allDays = () => D.days || [...new Set(D.games.map(g => g.game.date_et))].sort();
-  function ensureDay() { const days = allDays(); if (!days.length) { state.day = null; return; }
-    if (!state.day || !days.includes(state.day)) { const t = D.today_et; state.day = days.includes(t) ? t : (days.find(d => d >= (t || '')) || days[days.length - 1]); } }
-  const dayGames = () => { ensureDay(); return D.games.filter(g => !state.day || g.game.date_et === state.day); };
-  const dayLabel = d => { const dt = new Date(d + 'T12:00:00Z'); const l = dt.toLocaleString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' }); return d === D.today_et ? l + ' · today (ET)' : d < (D.today_et || '') ? l + ' · results' : l; };
-  function dayBar() { const days = allDays(); if (days.length < 2) return ''; ensureDay(); const i = days.indexOf(state.day);
-    return `<div class="daybar"><button data-day="${days[i - 1] || ''}" ${i <= 0 ? 'disabled' : ''} aria-label="previous day">◀</button>${days.map(d => `<button data-day="${d}" aria-pressed="${d === state.day}">${esc(dayLabel(d))} <span class="note">${D.games.filter(g => g.game.date_et === d).length}</span></button>`).join('')}<button data-day="${days[i + 1] || ''}" ${i >= days.length - 1 ? 'disabled' : ''} aria-label="next day">▶</button></div>`; }
-  const score = g => g.game.completed ? `<strong>${g.game.away_score}–${g.game.home_score}</strong> final` : tip(g.game.date_utc);
-  function distStrip(sim, line, actual) {
-    if (!sim) return '';
-    const lo = Math.min(sim.p10, line != null ? line : sim.p10, actual != null ? actual : sim.p10) - 1, hi = Math.max(sim.p90, line != null ? line : sim.p90, actual != null ? actual : sim.p90) + 1;
-    const x = v => (100 * (v - lo) / (hi - lo)).toFixed(1) + '%';
-    return `<div class="dist" data-tip="10th–90th percentile of 10,000 simulated games; shaded = middle 50%; black = median${line != null ? '; red = line ' + line : ''}">
-      <div class="rail" style="left:${x(sim.p10)};right:${(100 - parseFloat(x(sim.p90))).toFixed(1)}%"></div><div class="iqr" style="left:${x(sim.p25)};width:${(parseFloat(x(sim.p75)) - parseFloat(x(sim.p25))).toFixed(1)}%"></div>
-      <div class="med" style="left:${x(sim.median)}"></div>${line != null ? `<div class="ln" style="left:${x(line)}"></div>` : ''}${actual != null ? `<div class="med" style="left:${x(actual)};background:var(--violet)"></div>` : ''}
-      <span class="lab" style="left:${x(sim.p10)}">floor ${sim.p10}</span><span class="lab" style="left:${x(sim.median)}">median ${sim.median}</span><span class="lab" style="left:${x(sim.p90)}">ceiling ${sim.p90}</span></div>`;
-  }
-  const SCEN_LABEL = { base: 'Normal game', more_minutes: 'More minutes (+12%)', fewer_minutes: 'Fewer minutes (−15%)', blowout: 'Blowout', tough_matchup: 'Tough matchup (−8%)', favorable_matchup: 'Favourable matchup (+8%)', teammate_out: 'Questionable teammate sits' };
-  function qualRow(q, withGame) {
-    const g = D.games.find(x => x.game.game_id === q.game_id);
-    const res = q.result ? `<span class="tag ${q.result}">${q.result}</span>${q.actual != null ? ` <span class="note">${q.actual}</span>` : ''}` : (q.completed ? '<span class="tag void">no box score</span>' : '<span class="pill thin">open</span>');
-    return `<tr class="click" data-pplayer="${esc(g ? g.props.find(it => it.player === q.player)?.player_id || '' : '')}" data-pgame="${esc(q.game_id)}">${withGame ? `<td>${esc(q.team + (g && g.game.home === q.team ? ' vs ' : ' @ ') + q.opp)}</td>` : ''}<td><strong>${esc(q.player)}</strong> <span class="note">${esc(q.team)}</span></td><td><strong>${q.side} ${q.line}</strong> ${statName(q.stat)}</td><td class="num"><strong>${Number(q.price).toFixed(2)}×</strong> <span class="note">${esc(q.book || '')}</span></td><td class="num">${pct(q.p, 0)}</td><td class="num">${q.implied != null ? pct(q.implied, 0) : '–'}</td><td class="num edge-pos">${sg(100 * q.ev)}%</td><td class="num">${q.robust != null ? pct(q.robust, 0) : '–'}</td><td class="num">${q.hit10 != null ? pct(q.hit10, 0) : '–'}</td><td class="num">${q.sim ? `${q.sim.median} <span class="note">(${q.sim.p25}–${q.sim.p75})</span>` : '–'}</td><td>${res}</td></tr>`;
-  }
-  const QUAL_HEAD = withGame => `<thead><tr>${withGame ? '<th>Game</th>' : ''}<th>Player</th><th>Bet</th><th class="num">Price</th><th class="num">Sim P</th><th class="num">Implied</th><th class="num">EV</th><th class="num">Worst case</th><th class="num">L10 hit</th><th class="num">Median (IQR)</th><th>Status</th></tr></thead>`;
-  function qualPanel(rows, withGame, title) {
-    const f = D.filter || {};
-    const intro = `<p class="note">Every one of these passed all six checks: simulated probability ≥ ${pct(f.prob || 0.65, 0)} over ${(f.n_sims || 10000).toLocaleString()} games · EV ≥ ${sg(100 * (f.min_ev || 0.03))}% at the best price · the player's real L10 hit rate on that exact line ≥ ${pct(f.hit_rate || 0.6, 0)} · worst-case scenario still ≥ ${pct(f.robust || 0.55, 0)} · matchup not adverse · availability verified (no injury flag, stable role, ${f.min_games || 8}+ games with the team) · edge plausible. One bet per player per game (a player's stats rise and fall together); the player page shows the rest. Ranked by probability, then EV.</p>`;
-    return `<section class="card"><h2>${esc(title)}</h2>${intro}${rows.length ? `<div class="table-wrap"><table>${QUAL_HEAD(withGame)}<tbody>${rows.map(q => qualRow(q, withGame)).join('')}</tbody></table></div>` : '<div class="nobets">NO QUALIFYING BETS</div><p class="note">Nothing on this slate passes every check. That is the filter working, not a bug: the high-probability lines are priced short, the priced-well lines are not high-probability enough, or availability is unverified.</p>'}</section>`;
+    const hist = D.picks_history, perf = D.perf, S = D.systems || {};
+    const strat = state.strategy || 'prediction';
+    const chips = Object.entries(STRATEGY).filter(([k]) => k === 'scanner' || S[k]).map(([k, [l]]) => `<button data-strategy="${k}" aria-pressed="${strat === k}">${l}${S[k] && S[k].n_graded ? ` <span class="note">${S[k].wins}-${S[k].n_graded - S[k].wins}</span>` : ''}</button>`).join('');
+    let body;
+    if (strat === 'scanner') {
+      const rows = hist.slice().reverse().map(p => `<tr><td>${esc(p.created_at.slice(0, 10))}</td><td>${esc(p.market_type)}${p.line != null ? ' ' + p.line : ''}</td><td><strong>${esc(p.outcome)}</strong></td><td class="num">${pct(p.our_prob)}</td><td class="num">${Number(p.price).toFixed(3)}</td><td class="num">${sg(100 * p.edge)}</td><td class="num">$${Number(p.stake).toFixed(2)}</td><td>${p.result ? `<span class="pill ${p.result === 'win' ? 'cand' : 'none'}">${p.result}</span>` : '<span class="pill thin">open</span>'}</td><td class="num">${p.pnl != null ? money(p.pnl) : '–'}</td><td class="num">${p.closing_price != null ? sg(100 * (p.closing_price - p.price)) : '–'}</td></tr>`).join('');
+      body = `${tiles()}${perf.n ? `<section class="card"><h2>Cumulative paper P&amp;L</h2>${pnlLine(hist)}</section>` : ''}
+        <section class="card"><h2>History</h2>${hist.length ? `<div class="table-wrap"><table><thead><tr><th>Logged</th><th>Market</th><th>Side</th><th class="num">Our prob</th><th class="num">Price</th><th class="num">Edge</th><th class="num">Stake</th><th>Result</th><th class="num">P&amp;L</th><th class="num">CLV</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">No picks logged yet.</div>'}</section>`;
+    } else {
+      const st = S[strat] || {}, rows = (D.recs || []).filter(r => r.system === strat).slice().reverse();
+      const openN = rows.filter(r => !r.result).length;
+      body = `<div class="tiles">
+          <div class="tile"><div class="label">Logged</div><div class="value">${st.n_identified || 0}</div><div class="delta">${st.n_open || 0} open · ${st.n_graded || 0} graded</div></div>
+          <div class="tile"><div class="label">Record</div><div class="value">${st.n_graded ? `${st.wins}–${st.n_graded - st.wins}` : '—'}</div><div class="delta">${st.hit_rate != null ? `${pct(st.hit_rate, 1)} hit · predicted ${pct(st.avg_prob, 1)}` : 'nothing graded yet'}</div></div>
+          <div class="tile"><div class="label">P&amp;L (flat 1 unit)</div><div class="value">${st.pnl != null ? sg(st.pnl, 2) + ' u' : '—'}</div><div class="delta">${st.actual_roi != null ? `ROI ${sg(st.actual_roi, 1)}% · expected ${sg(st.expected_roi, 1)}% · avg odds ${st.avg_odds.toFixed(2)}×` : 'ROI appears after grading'}</div></div>
+          <div class="tile"><div class="label">Closing line value</div><div class="value">${st.clv_avg != null ? sg(st.clv_avg, 2) + ' pts' : '—'}</div><div class="delta">${st.beat_close != null ? `${pct(st.beat_close, 0)} beat the close (${st.n_clv})` : 'needs closing prices'}</div></div></div>
+        ${st.series && st.series.length ? `<section class="card"><h2>Cumulative units</h2>${multiLine({ [strat]: st.series })}</section>` : ''}
+        ${st.by_category ? `<section class="card"><h2>By market</h2><div class="table-wrap"><table><thead><tr><th>Market</th><th class="num">n</th><th class="num">Hit rate</th><th class="num">ROI</th></tr></thead><tbody>${Object.entries(st.by_category).map(([k, v]) => `<tr><td>${statName(k)}</td><td class="num">${v.n}</td><td class="num">${pct(v.hit_rate, 0)}</td><td class="num ${v.roi > 0 ? 'edge-pos' : 'edge-neg'}">${sg(v.roi, 1)}%</td></tr>`).join('')}</tbody></table></div></section>` : ''}
+        <section class="card"><h2>History <span class="note">last 60 days · ${openN} open</span></h2>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Player</th><th>Game</th><th>Bet</th><th class="num">Price (book)</th><th class="num">P</th><th class="num">EV</th><th class="num">Closing</th><th>Result</th><th class="num">Units</th></tr></thead><tbody>${rows.map(r => { const u = r.result === 'win' ? r.price - 1 : r.result === 'loss' ? -1 : (r.result ? 0 : null);
+          return `<tr><td>${esc(r.date_et)}</td><td><strong>${esc(r.player)}</strong> <span class="note">${esc(r.team)}</span></td><td>${esc(r.team)} v ${esc(r.opp)}</td><td><strong>${esc(r.side)} ${r.line}</strong> ${statName(r.stat)}</td><td class="num">${Number(r.price).toFixed(2)}× <span class="note">${esc(r.book)}</span></td><td class="num">${pct(r.prob, 0)}</td><td class="num">${r.ev != null ? sg(100 * r.ev, 1) + '%' : '–'}</td><td class="num">${r.closing_price ? Number(r.closing_price).toFixed(2) + '×' : (r.closing_line != null && r.closing_line !== r.line ? `line ${r.closing_line}` : '–')}</td><td>${r.result ? `<span class="tag ${r.result}">${r.result}</span>${r.actual != null ? ` <span class="note">${r.actual}</span>` : ''}` : '<span class="pill thin">open</span>'}</td><td class="num ${u > 0 ? 'edge-pos' : u < 0 ? 'edge-neg' : ''}">${u == null ? '–' : sg(u, 2)}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">Nothing logged for this strategy yet; entries appear after the next run and settle the morning after the games.</div>'}</section>`;
+    }
+    return `<div><h1>Picks · paper trading</h1><p class="sub">Each strategy is taken as a paper bet the first time it appears on the board (price, line and book at that moment), then settled from the box score with one rule for all: on the line = push, did not play = void, flat one-unit stakes. The closing price is the last stored price at that book before tip-off. Pick a strategy to see its record on its own.</p></div>
+      <div class="sub-tabs">${chips}</div>
+      <p class="note">${esc((STRATEGY[strat] || [])[1] || '')}</p>
+      ${body}`;
   }
 
   // ---------- props flow: matches -> match -> players -> previous numbers -> floor + odds ----------
@@ -851,7 +839,7 @@ tr.dim td { color: var(--muted); }
   function multiLine(seriesMap) {
     const names = Object.keys(seriesMap).filter(k => (seriesMap[k] || []).length);
     if (!names.length) return '<p class="note">No graded recommendations yet; the lines appear as results settle.</p>';
-    const colors = { prediction: 'var(--seq)', value: 'var(--violet)', market: 'var(--away)' };
+    const colors = { prediction: 'var(--seq)', value: 'var(--violet)', market: 'var(--away)', floors: 'var(--good)', valuelines: 'var(--ink)' };
     const all = names.flatMap(k => seriesMap[k].map(p => p.cum)), lo = Math.min(0, ...all), hi = Math.max(0, ...all), span = (hi - lo) || 1;
     const w = 720, h = 180, padL = 44, padB = 20, padT = 10;
     const y = v => padT + (h - padT - padB) * (1 - (v - lo) / span);
@@ -918,6 +906,7 @@ tr.dim td { color: var(--muted); }
     const tk = e.target.closest('[data-track]'); if (tk) { const bet = JSON.parse(tk.dataset.track); const inp = tk.parentElement.querySelector('input[type=number]'); const stake = Math.max(1, Number(inp && inp.value) || 10); const rows = loadTracker(); if (rows.some(r => r.key === bet.key)) { tk.textContent = 'Already tracked'; return; } rows.push(Object.assign(bet, { stake, recorded_at: new Date().toISOString(), result: null, pnl: null })); saveTracker(rows); tk.textContent = 'Tracked ✓'; return; }
     const td = e.target.closest('[data-tdel]'); if (td) { saveTracker(loadTracker().filter(r => r.key !== td.dataset.tdel)); render(); return; }
     const tx = e.target.closest('[data-texport]'); if (tx) { const blob = new Blob([JSON.stringify(loadTracker(), null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'bet-tracker.json'; a.click(); return; }
+    const sb = e.target.closest('[data-strategy]'); if (sb) { state.strategy = sb.dataset.strategy; render(); return; }
     const ms = e.target.closest('[data-msec]'); if (ms) { state.msec = ms.dataset.msec; render(); return; }
     const mo = e.target.closest('[data-mopen]'); if (mo && !e.target.closest('button,select,input,a')) { state.mopen = state.mopen === mo.dataset.mopen ? null : mo.dataset.mopen; render(); return; }
     const vo = e.target.closest('[data-vopen]'); if (vo && !e.target.closest('button,select,input,a')) { state.vopen = state.vopen === vo.dataset.vopen ? null : vo.dataset.vopen; render(); return; }

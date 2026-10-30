@@ -215,6 +215,42 @@ def analyze(store: Store, days_ahead=None, log=print):
                                          "book": i["qualifying"]["book"] or "unknown", "p": i["qualifying"]["p"], "ev": i["qualifying"]["ev"],
                                          "implied": i["qualifying"]["implied"]} for i in prim])
         results.append(res)
+    # paper strategies mirroring the Props page lists: "Safest floors" (over lines rated >= 65% with no
+    # negative edge, highest probability first) and "Best value lines" (largest positive edge at >= prob floor)
+    from .value import hard_flags
+    cfg = SETTINGS.betting
+    floors, vlines = [], []
+    for res in results:
+        g = res["game"]
+        for it in res["prop_items"]:
+            if hard_flags(it.get("flags")):
+                continue
+            liquid = [x for x in it["ladder"] if x.get("real") and x.get("over_price")]
+            for x in liquid:
+                row = {"player": it["player"], "team": it["team"], "opp": it["opp"], "stat": it["stat"], "side": "over", "line": x["line"],
+                       "price": x["over_price"], "book": x["best_over_book"] or "unknown", "p": x["p_over"], "ev": x.get("ev_over"),
+                       "implied": x.get("implied_over"), "game": g, "pid": it["player_id"]}
+                if x["p_over"] >= 0.65 and (x.get("edge_over") or -1) >= -0.01:
+                    floors.append(dict(row, rank=(x["p_over"], x.get("edge_over") or 0)))
+                if x["p_over"] >= cfg.prob_floor and (x.get("edge_over") or 0) >= cfg.edge_threshold:
+                    vlines.append(dict(row, rank=(x.get("edge_over") or 0, x["p_over"])))
+    for name, rows, top in (("floors", floors, 25), ("valuelines", vlines, 15)):
+        rows.sort(key=lambda r: r["rank"], reverse=True)
+        seen, chosen = set(), []
+        for r in rows:
+            k = (r["game"]["game_id"], r["pid"])
+            if k in seen:
+                continue
+            seen.add(k)
+            chosen.append(r)
+            if len(chosen) >= top:
+                break
+        by_g = {}
+        for r in chosen:
+            by_g.setdefault(r["game"]["game_id"], []).append(r)
+        for res in results:
+            gid = res["game"]["game_id"]
+            store.add_recs(name, res["game"], [{k: v for k, v in r.items() if k not in ("game", "pid", "rank")} for r in by_g.get(gid, [])])
     # system 2: profitability & value = positive-EV singles that are not suspect, one per player per game
     from .value import build_singles
     now = datetime.now(espn.ET)
