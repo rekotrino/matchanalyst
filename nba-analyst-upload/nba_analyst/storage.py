@@ -4,7 +4,7 @@ something - that is what makes later backtests and CLV grading honest."""
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
@@ -100,6 +100,19 @@ CREATE TABLE IF NOT EXISTS qualifying_log (
     prob REAL NOT NULL, ev REAL, price REAL, book TEXT, implied REAL, robust REAL, hit10 REAL,
     created_at TEXT NOT NULL, actual REAL, result TEXT, graded_at TEXT,
     PRIMARY KEY (game_id, player, stat, line, side)
+);
+CREATE TABLE IF NOT EXISTS recs (
+    system TEXT NOT NULL, game_id TEXT NOT NULL, date_et TEXT NOT NULL, tip_utc TEXT,
+    player TEXT NOT NULL, team TEXT, opp TEXT, stat TEXT NOT NULL, side TEXT NOT NULL, line REAL NOT NULL,
+    price REAL NOT NULL, book TEXT NOT NULL, prob REAL NOT NULL, ev REAL, implied REAL, meta TEXT,
+    created_at TEXT NOT NULL,
+    closing_price REAL, closing_line REAL, closing_at TEXT, actual REAL, result TEXT, graded_at TEXT,
+    PRIMARY KEY (system, game_id, player, stat, side, line, book)
+);
+CREATE TABLE IF NOT EXISTS market_state (
+    run_at TEXT NOT NULL, key TEXT NOT NULL, game_id TEXT NOT NULL, line REAL, price REAL, book TEXT,
+    score REAL, gap_sd REAL, recommended INTEGER, injury TEXT,
+    PRIMARY KEY (run_at, key)
 );
 CREATE TABLE IF NOT EXISTS picks (
     pick_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +212,88 @@ class Store:
 
     def qualifying_history(self):
         return [dict(r) for r in self.conn.execute("SELECT * FROM qualifying_log ORDER BY date_et, created_at")]
+
+    # -- recommendation log shared by the three systems ---------------------
+    def add_recs(self, system, game, rows):
+        ts = now_iso()
+        for q in rows:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO recs (system,game_id,date_et,tip_utc,player,team,opp,stat,side,line,price,book,prob,ev,implied,meta,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (system, game["game_id"], game["date_et"], game.get("date_utc"), q["player"], q.get("team"), q.get("opp"),
+                 q["stat"], q["side"], q["line"], q["price"], q["book"], q["p"], q.get("ev"), q.get("implied"),
+                 json.dumps(q.get("meta") or {}), ts))
+
+    def ungraded_recs(self):
+        return [dict(r) for r in self.conn.execute(
+            """SELECT r.*, g.completed, g.date_utc FROM recs r JOIN games g ON g.game_id=r.game_id
+               WHERE r.result IS NULL AND g.completed=1""")]
+
+    def grade_rec(self, r, actual, result, closing_price, closing_line, closing_at):
+        self.conn.execute(
+            """UPDATE recs SET actual=?, result=?, closing_price=?, closing_line=?, closing_at=?, graded_at=?
+               WHERE system=? AND game_id=? AND player=? AND stat=? AND side=? AND line=? AND book=?""",
+            (actual, result, closing_price, closing_line, closing_at, now_iso(),
+             r["system"], r["game_id"], r["player"], r["stat"], r["side"], r["line"], r["book"]))
+
+    def recs_history(self, system=None):
+        q = "SELECT * FROM recs" + (" WHERE system=?" if system else "") + " ORDER BY date_et, created_at"
+        return [dict(r) for r in self.conn.execute(q, (system,) if system else ())]
+
+    def recs_open_keys(self, system):
+        return {(r["game_id"], r["player"].lower(), r["stat"]) for r in self.conn.execute(
+            "SELECT game_id, player, stat FROM recs WHERE system=?", (system,))}
+
+    # -- odds history / closing prices -----------------------------------------
+    def odds_history(self, game_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM book_odds WHERE game_id=? ORDER BY fetched_at", (game_id,))]
+
+    def closing_quote(self, game_id, book, market, side, player, line, tip_utc):
+        """Last stored price at that book before tip-off: (price at the same line, line, price at the
+        last line seen, fetched_at). Either price may be None."""
+        rows = [dict(r) for r in self.conn.execute(
+            """SELECT * FROM book_odds WHERE game_id=? AND book=? AND market=? AND side=? AND player=?
+               AND fetched_at<=? ORDER BY fetched_at DESC""", (game_id, book, market, side, player or "", tip_utc or "9"))]
+        if not rows:
+            return None, None, None, None
+        last_at = rows[0]["fetched_at"]
+        last = [r for r in rows if r["fetched_at"] == last_at]
+        same = next((r for r in last if r["line"] == line), None)
+        main = min(last, key=lambda r: abs((r["line"] or 0) - (line or 0)))
+        return (same["price"] if same else None), main["line"], main["price"], last_at
+
+    def injuries_history(self, game_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM injuries WHERE game_id=? ORDER BY fetched_at", (game_id,))]
+
+    # -- market monitoring snapshots ---------------------------------------------
+    def market_state_last(self, skip_latest=False):
+        runs = [x[0] for x in self.conn.execute("SELECT DISTINCT run_at FROM market_state ORDER BY run_at DESC")]
+        if skip_latest:
+            runs = runs[1:]
+        if not runs:
+            return None, {}
+        rows = [dict(r) for r in self.conn.execute("SELECT * FROM market_state WHERE run_at=?", (runs[0],))]
+        return runs[0], {r["key"]: r for r in rows}
+
+    def market_state_save(self, rows):
+        ts = now_iso()
+        for r in rows:
+            self.conn.execute("INSERT OR REPLACE INTO market_state VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (ts, r["key"], r["game_id"], r.get("line"), r.get("price"), r.get("book"), r.get("score"),
+                               r.get("gap_sd"), 1 if r.get("recommended") else 0, r.get("injury")))
+        # keep only the two most recent snapshots
+        runs = [x[0] for x in self.conn.execute("SELECT DISTINCT run_at FROM market_state ORDER BY run_at DESC")]
+        for old in runs[2:]:
+            self.conn.execute("DELETE FROM market_state WHERE run_at=?", (old,))
+        return ts
+
+    def prune_odds(self, keep_days=14):
+        """Price history for games that finished more than keep_days ago is no longer needed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+        self.conn.execute("DELETE FROM book_odds WHERE game_id IN (SELECT game_id FROM games WHERE completed=1 AND date_et<?)", (cutoff,))
+        self.conn.execute("DELETE FROM pm_markets WHERE game_id IN (SELECT game_id FROM games WHERE completed=1 AND date_et<?)", (cutoff,))
 
     def games_missing_stats(self):
         return [dict(r) for r in self.conn.execute(

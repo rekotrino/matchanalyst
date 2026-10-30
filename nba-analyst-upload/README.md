@@ -147,6 +147,40 @@ set results by hand otherwise, and charts cumulative P&L. It lives in the
 browser's local storage, separate from simulations and backtests; export it
 to JSON from time to time.
 
+## Market Intelligence & Edge Detection (the Market tab) and Compare
+
+`nba_analyst/market.py` looks at the market rather than the prediction, using
+the engine's results and the price history the pipeline stores on every run
+(`book_odds`, now including Polymarket, pruned 14 days after a game): prices
+compared across books with the best over / under and the biggest gaps; line
+movement from the first stored price to now per book and as a consensus
+(median of each book's main line), with a move inside six hours of an
+injury-status change on that team linked to it; every alternative line with
+probability, odds, implied probability, EV and Kelly fraction, and the best
+probability-payout combination; model-vs-consensus disagreements in standard
+deviations with a verdict (genuine / lean / unsupported / model uncertainty /
+likely missing information); a confidence score per player (minutes
+stability, role, sample, variance, injury, matchup sample), kept separate from
+probability; a ranked opportunity list (35 discrepancy + 25 odds advantage +
+20 reliability + 10 evidence + 10 favourable movement; entry needs a
+discrepancy or an odds advantage, never movement alone; one per player per
+game); portfolio clusters (same game / same team); and monitoring alerts
+against the previous run's snapshot (line moved, better odds, injury change,
+became valuable, discrepancy became significant).
+
+Every system logs its own hypothetical recommendations to the `recs` table
+the first time it sees them (Prediction = qualifying bets; Value = best
+positive-EV single per player at ≥ 60% and low/medium risk; Market =
+opportunities scoring ≥ 60 with EV ≥ 3% and confidence ≥ 50), and `grade`
+settles all of them with one rule (box score; on the line = push; DNP = void)
+and records the closing price (last stored price at that book before
+tip-off) for closing line value. The Compare tab puts the three side by side:
+identified, graded, hit rate vs average predicted probability, average odds,
+expected and actual ROI, P&L over time, CLV and share beating the close,
+average line move, by-market breakdown and a Sharpe-like risk-adjusted figure.
+Actual bets from the Value tab's tracker are shown separately and never mixed
+in. No system is assumed better; the record decides.
+
 ## How to read a report
 
 - **Pure model** is what the ratings alone say. Early in the season it is
@@ -273,13 +307,13 @@ priced at, so grading tracks each venue's closing price.
 
     python -m nba_analyst export-site site
 
-writes `site\index.html` plus `site\data.json` (NBA + NHL). Drag the `site`
-folder onto Netlify's deploy page or point any static host at it. The page
-reads `data.json` next to it and re-reads it every 3 minutes, so replacing
-`data.json` is enough to update a deployed board. `--embed` writes the old
+writes `site\index.html` plus `site\data.json` and `site\version.json`
+(NBA + NHL). Point any static host at the folder. The page reads `data.json`
+next to it and checks the tiny `version.json` every 3 minutes, downloading
+the data again only when a new build exists. `--embed` writes the old
 single-file version instead (data inside index.html, nothing else needed).
 
-## Keeping it live (auto-refresh every 30 minutes)
+## Keeping it live (auto-refresh every 30 minutes, GitHub Pages)
 
 Netlify only hosts files; the pipeline itself (ESPN, Polymarket, the odds
 API, the model) has to run somewhere with internet. `.github/workflows/refresh.yml`
@@ -290,12 +324,13 @@ anything running on your PC. Setup, once:
 1. Put this folder in a GitHub repository (private is fine). The snapshot
    folders under `data\` are committed so the first run has a baseline;
    the SQLite databases are not (they are rebuilt and cached by the workflow).
-2. Netlify: create the site once (drag the `site` folder), then copy
-   **Site configuration → Site details → Site ID**, and create a personal
-   access token under **User settings → Applications → Personal access tokens**.
+2. GitHub: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+   The board is then published at `https://<user>.github.io/<repo>/` on every run.
+   (Netlify's free plan is credit-based and 48 deploys a day exhaust it; the
+   workflow still pushes to Netlify if `NETLIFY_AUTH_TOKEN` / `NETLIFY_SITE_ID`
+   secrets exist, but a Netlify failure never blocks the Pages deploy.)
 3. GitHub: **Settings → Secrets and variables → Actions → New repository secret**
-   for `NETLIFY_SITE_ID`, `NETLIFY_AUTH_TOKEN`, and optionally `ODDS_API_KEY`
-   (without it the board uses Polymarket + ESPN only).
+   for `ODDS_API_KEY` (optional; without it the board uses Polymarket + ESPN only).
 4. **Actions** tab → *refresh-board* → *Run workflow* for the first build
    (3–8 minutes). After that it runs itself every 30 minutes; the
    `updated …` stamp in the dashboard header shows the last build.

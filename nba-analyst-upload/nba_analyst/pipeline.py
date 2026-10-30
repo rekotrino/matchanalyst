@@ -111,6 +111,7 @@ def update(store: Store, with_prior=True, max_summaries=600, log=print):
             slug, markets = polymarket.fetch_game_markets(g["away"], g["home"], g["date_et"])
             if slug:
                 store.add_pm_markets(g["game_id"], slug, markets)
+                store.add_quotes(polymarket_quotes(g, store.latest_pm_markets(g["game_id"]), NICK_TO_ESPN, PROP_TYPES))
                 log(f"  {g['away']} @ {g['home']}: {len(markets)} Polymarket markets ({slug})")
             else:
                 log(f"  {g['away']} @ {g['home']}: no Polymarket event yet")
@@ -119,6 +120,8 @@ def update(store: Store, with_prior=True, max_summaries=600, log=print):
         time.sleep(0.2)
     store.commit()
     fetch_books(store, upcoming, "nba", espn.TEAM_NAMES, log)
+    store.prune_odds()
+    store.commit()
 
 
 def fetch_books(store, upcoming, sport, team_names, log=print):
@@ -204,14 +207,47 @@ def analyze(store: Store, days_ahead=None, log=print):
     results, day_picks = [], []
     for g in upcoming:
         res = analyze_game(store, g, ctx)
-        store.add_qualifying(g, [dict(i["qualifying"], player=i["player"], team=i["team"], opp=i["opp"], stat=i["stat"])
-                                 for i in primary_qualifying(res["prop_items"])])
+        prim = primary_qualifying(res["prop_items"])
+        store.add_qualifying(g, [dict(i["qualifying"], player=i["player"], team=i["team"], opp=i["opp"], stat=i["stat"]) for i in prim])
+        # system 1: prediction intelligence = the engine's qualifying bets
+        store.add_recs("prediction", g, [{"player": i["player"], "team": i["team"], "opp": i["opp"], "stat": i["stat"],
+                                         "side": i["qualifying"]["side"], "line": i["qualifying"]["line"], "price": i["qualifying"]["price"],
+                                         "book": i["qualifying"]["book"] or "unknown", "p": i["qualifying"]["p"], "ev": i["qualifying"]["ev"],
+                                         "implied": i["qualifying"]["implied"]} for i in prim])
+        results.append(res)
+    # system 2: profitability & value = positive-EV singles that are not suspect, one per player per game
+    from .value import build_singles
+    now = datetime.now(espn.ET)
+    singles = [x for x in build_singles(results, now) if x["kind"] == "prop" and x["ev"] > 0 and x["p"] >= 0.60
+               and x["risk"] in ("low", "medium") and not x["stale"]]
+    best_by = {}
+    for x in singles:
+        k = (x["game_id"], x["player_id"])
+        if k not in best_by or x["ev"] > best_by[k]["ev"]:
+            best_by[k] = x
+    by_game = {}
+    for x in best_by.values():
+        by_game.setdefault(x["game_id"], []).append(x)
+    for res in results:
+        gid = res["game"]["game_id"]
+        store.add_recs("value", res["game"], [{"player": x["player"], "team": x["team"], "opp": x["opp"], "stat": x["stat"], "side": x["side"],
+                                              "line": x["line"], "price": x["price"], "book": x["book"], "p": x["p"], "ev": x["ev"],
+                                              "implied": x["implied"], "meta": {"risk": x["risk"]}} for x in by_game.get(gid, [])])
+    # system 3: market intelligence = recommended opportunities (also refreshes the monitoring snapshot)
+    from .market import build_market
+    mk = build_market(results, store, now, now.isoformat(timespec="minutes"))
+    for res in results:
+        gid = res["game"]["game_id"]
+        store.add_recs("market", res["game"], [{"player": o["player"], "team": o["team"], "opp": o["opp"], "stat": o["stat"], "side": o["side"],
+                                               "line": o["line"], "price": o["price"], "book": o["book"], "p": o["p"], "ev": o["ev"],
+                                               "implied": o["implied"], "meta": {"score": o["score"], "confidence": o["confidence"]}}
+                                              for o in mk["recommended"] if o["game_id"] == gid])
+    for g, res in zip(upcoming, results):
         for p in res["picks"]:
             if p["market_id"] not in existing:
                 store.add_pick(dict(p, mode="paper"))
                 existing.add(p["market_id"])
         day_picks.extend(res["picks"])
-        results.append(res)
     store.commit()
     chosen = select_daily(list(day_picks))
     chosen_ids = {p["market_id"] for p in chosen}
@@ -250,7 +286,7 @@ def analyze_game(store: Store, g, ctx, record=True):
                   "dvp": ctx["dvp"], "pace": pred.get("pace"), "lg_pace": lg.get("poss")}
     priced, _pm_picks = scan_game(g, pred, markets, player_ctx=player_ctx)
     # ---- every book on one footing -------------------------------------------------
-    quotes = polymarket_quotes(g, markets, NICK_TO_ESPN, PROP_TYPES) + store.latest_quotes(g["game_id"])
+    quotes = polymarket_quotes(g, markets, NICK_TO_ESPN, PROP_TYPES) + [q for q in store.latest_quotes(g["game_id"]) if q.book != "polymarket"]
     dtd = {i["player"].lower() for i in injuries if (i.get("status") or "").lower() not in ("out", "")}
     dtd_names = {t: [i["player"] for i in injuries if i["team"] == t and (i.get("status") or "").lower() not in ("out", "")] for t in (home, away)}
     fns = prop_fns(g, ctx, rotations, out_names, player_ctx, pred=pred, rest={home: rest_h, away: rest_a}, dtd_names=dtd_names,
@@ -315,6 +351,28 @@ def grade_qualifying(store: Store, log=print):
         log(f"[grade] graded {n} qualifying bets")
 
 
+def grade_recs(store: Store, log=print):
+    from .market import settle
+    n = 0
+    for r in store.ungraded_recs():
+        rows = [x for x in store.game_player_stats(r["game_id"]) if x["player"].lower() == r["player"].lower()]
+        if not rows:
+            continue
+        x = rows[0]
+        if x.get("dnp") or not x.get("min"):
+            val = None
+        else:
+            val = {"pra": (x["pts"] or 0) + (x["reb"] or 0) + (x["ast"] or 0), "pr": (x["pts"] or 0) + (x["reb"] or 0),
+                   "pa": (x["pts"] or 0) + (x["ast"] or 0), "ra": (x["reb"] or 0) + (x["ast"] or 0)}.get(r["stat"], x.get(r["stat"]) or 0)
+        res = settle(val, r["line"], r["side"])
+        cp, cl, clp, cat = store.closing_quote(r["game_id"], r["book"], r["stat"], r["side"], r["player"], r["line"], r.get("date_utc"))
+        store.grade_rec(r, val, res, cp, cl, cat)
+        n += 1
+    store.commit()
+    if n:
+        log(f"[grade] graded {n} system recommendations")
+
+
 def qualifying_performance(store: Store):
     hist = [q for q in store.qualifying_history() if q["result"] in ("win", "loss")]
     if not hist:
@@ -327,6 +385,7 @@ def qualifying_performance(store: Store):
 
 def grade(store: Store, log=print):
     grade_qualifying(store, log)
+    grade_recs(store, log)
     graded = 0
     for p in store.open_picks():
         if not p["completed"] or p["home_score"] is None:

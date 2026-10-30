@@ -13,6 +13,7 @@ from .pipeline import analyze_game, build_context, performance, qualifying_perfo
 from .scanner import select_daily
 from .storage import Store
 from .value import build_value
+from .market import build_market, system_stats
 
 
 def _num(v, nd=3):
@@ -192,8 +193,14 @@ def build_payload(store: Store, days_ahead=None):
     b, m = SETTINGS.betting, SETTINGS.model
     now = datetime.now(ET)
     value = _round(build_value(results, now, now.isoformat(timespec="minutes")))
+    market = _round(build_market(results, store, now, now.isoformat(timespec="minutes"), snapshot=False))
+    recs = store.recs_history()
+    systems = {name: system_stats([r for r in recs if r["system"] == name]) for name in ("prediction", "value", "market")}
+    recent_recs = [{k: r[k] for k in ("system", "game_id", "date_et", "player", "team", "opp", "stat", "side", "line", "price", "book",
+                                      "prob", "ev", "implied", "created_at", "closing_price", "closing_line", "actual", "result")}
+                   for r in recs if r["date_et"] >= str(start)]
     return {
-        "value": value,
+        "value": value, "market": market, "systems": systems, "recs": _round(recent_recs),
         "generated_at": datetime.now(ET).isoformat(timespec="minutes"),
         "season_label": f"{ctx['season'] - 1}-{str(ctx['season'])[2:]}",
         "n_cur_games": ctx["n_cur_games"], "n_prior_games": ctx["n_prior_games"],
